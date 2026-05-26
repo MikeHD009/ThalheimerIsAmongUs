@@ -118,10 +118,10 @@ class TextInput:
 # MAP & HITBOX LOADER
 # =========================
 def load_hitboxes(filepath):
-    hitboxes, vents, plants = [], [], []
+    hitboxes, vents, plants, tasks_hitboxes, spawnpoints = [], [], [], [], []
     if not os.path.exists(filepath):
         print(f"WARNUNG: Hitbox-Datei nicht gefunden: {filepath}")
-        return hitboxes, vents, plants
+        return hitboxes, vents, plants, tasks_hitboxes, spawnpoints
     
     with open(filepath, "r", encoding="utf-8-sig") as f:
         map_data = json.load(f)
@@ -153,7 +153,24 @@ def load_hitboxes(filepath):
                 for i, tile_id in enumerate(layer["data"]):
                     if tile_id != 0:
                         plants.append(pygame.Rect((i % map_width) * TILE_SIZE, (i // map_width) * TILE_SIZE, TILE_SIZE, TILE_SIZE))
-    return hitboxes, vents, plants
+        elif name in ["Tasks", "Tasks"]:
+            if "objects" in layer:
+                for obj in layer["objects"]:
+                    tasks_hitboxes.append(pygame.Rect(obj["x"], obj["y"], obj["width"], obj["height"]))
+            elif "data" in layer:
+                for i, tile_id in enumerate(layer["data"]):
+                    if tile_id != 0:
+                        tasks_hitboxes.append(pygame.Rect((i % map_width) * TILE_SIZE, (i // map_width) * TILE_SIZE, TILE_SIZE, TILE_SIZE))
+        elif name in ["Spawnpoints", "Spawnpoints"]:
+            if "objects" in layer:
+                for obj in layer["objects"]:
+                    spawnpoints.append(pygame.Rect(obj["x"], obj["y"], 0, 0))
+            elif "data" in layer:
+                for i, tile_id in enumerate(layer["data"]):
+                    if tile_id != 0:
+                        spawnpoints.append(pygame.Rect((i % map_width) * TILE_SIZE, (i // map_width) * TILE_SIZE, TILE_SIZE, TILE_SIZE))
+                        
+    return hitboxes, vents, plants, tasks_hitboxes, spawnpoints
 
 def get_current_vent(player, vents):
     for vent in vents:
@@ -224,7 +241,7 @@ def receive_data(sock):
             print("RECEIVE THREAD ERROR:", e)
             break
 
-def connect_to_server(ip, name):
+def connect_to_server(ip, name, spawnpoints):
     global sock, my_id, my_player, connected, state
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -238,7 +255,7 @@ def connect_to_server(ip, name):
         my_id = struct.unpack('!B', sock.recv(1))[0]
         print("Verbunden mit ID:", my_id)
 
-        my_player = Player(100 + (my_id * 30), 100, player_images[my_id % len(player_images)])
+        my_player = Player(spawnpoints[my_id].x, spawnpoints[my_id].y, player_images[my_id % len(player_images)])
         threading.Thread(target=receive_data, args=(sock,), daemon=True).start()
         connected = True
         return True
@@ -250,9 +267,9 @@ def connect_to_server(ip, name):
 # TASK SYSTEM
 # ===================
 task_manager = tasks.TaskManager()
-proximity_font = pygame.font.SysFont("arial", 16, bold=True)
+proximity_font = pygame.font.SysFont("arial", 11, bold=True)
 already_done_timer = 0
-warning_font = pygame.font.SysFont("arial", 24, bold=True)
+warning_font = pygame.font.SysFont("arial", 11, bold=True)
 
 tasks_instances = [
     tasks.BookSortTask(screen), tasks.ChairStackTask(screen), tasks.WindowTask(screen),
@@ -268,38 +285,39 @@ tasks_instances = [
 for t in tasks_instances:
     task_manager.add_task(t)
 
-# Die Task Buttons liegen im World-Space (Koordinaten auf der Tiled-Map)
-task_buttons = [
-    {"rect": pygame.Rect(100, 100, 24, 24), "type": "books", "task_index": 0, "name": "Bücher sortieren"},
-    {"rect": pygame.Rect(200, 100, 24, 24), "type": "chair_stack", "task_index": 1, "name": "Stühle stapeln"},
-    {"rect": pygame.Rect(70, 250, 24, 24),  "type": "window", "task_index": 2, "name": "Fenster lüften"},
-    {"rect": pygame.Rect(400, 100, 24, 24), "type": "pc_download", "task_index": 3, "name": "Daten downloaden"},
-    {"rect": pygame.Rect(150, 380, 24, 24), "type": "board", "task_index": 4, "name": "Tafel wischen"},
-    {"rect": pygame.Rect(460, 340, 24, 24), "type": "projector", "task_index": 5, "name": "Beamer verkabeln"},
-    {"rect": pygame.Rect(520, 100, 2424, 24), "type": "pc_scan", "task_index": 6, "name": "Virenscan"},
-    {"rect": pygame.Rect(520, 220, 2424, 24), "type": "printer", "task_index": 7, "name": "Druckerpapier auffüllen"},
-    {"rect": pygame.Rect(750, 100, 2424, 24), "type": "bunsen", "task_index": 8, "name": "Bunsenbrenner einstellen"},
-    {"rect": pygame.Rect(850, 100, 2424, 24), "type": "chemical", "task_index": 9, "name": "Chemikalien mischen"},
-    {"rect": pygame.Rect(220, 250, 2424, 24), "type": "pencil_case", "task_index": 10, "name": "Mäppchen packen"},
-    {"rect": pygame.Rect(400, 220, 24, 24), "type": "keyboard", "task_index": 11, "name": "Tastatur reinigen"},
-    {"rect": pygame.Rect(750, 220, 24, 24), "type": "microscope", "task_index": 12, "name": "Mikroskop fokussieren"},
-    {"rect": pygame.Rect(850, 220, 24, 24), "type": "circuit", "task_index": 13, "name": "Schaltkreis reparieren"},
-    {"rect": pygame.Rect(100, 520, 24, 24), "type": "ball_basket", "task_index": 14, "name": "Bälle einsammeln"},
-    {"rect": pygame.Rect(220, 530, 24, 24), "type": "mats", "task_index": 15, "name": "Matten stapeln"},
-    {"rect": pygame.Rect(420, 540, 24, 24), "type": "tray_sort", "task_index": 16, "name": "Tablett sortieren"},
-    {"rect": pygame.Rect(540, 540, 24, 24), "type": "milk_carton", "task_index": 17, "name": "Milch einfüllen"},
-    {"rect": pygame.Rect(640, 540, 24, 24), "type": "pizza", "task_index": 18, "name": "Pizza schneiden"},
-    {"rect": pygame.Rect(760, 510, 24, 24), "type": "vending", "task_index": 19, "name": "Automat klemmt"},
-    {"rect": pygame.Rect(880, 540, 24, 24), "type": "barcode", "task_index": 20, "name": "Barcodes scannen"},
-    {"rect": pygame.Rect(1020, 200, 24, 24), "type": "locker", "task_index": 21, "name": "Spind aufräumen"},
-    {"rect": pygame.Rect(1020, 340, 24, 24), "type": "trash_bin", "task_index": 22, "name": "Müll wegbringen"},
-    {"rect": pygame.Rect(800, 340, 24, 24), "type": "pipe_leak", "task_index": 23, "name": "Rohrbruch dichten"},
+# Template zur dynamischen Generierung der Task-Buttons aus der JSON
+TASK_TEMPLATES = [
+    {"type": "books", "name": "Bücher sortieren"},
+    {"type": "chair_stack", "name": "Stühle stapeln"},
+    {"type": "window", "name": "Fenster lüften"},
+    {"type": "pc_download", "name": "Daten downloaden"},
+    {"type": "board", "name": "Tafel wischen"},
+    {"type": "projector", "name": "Beamer verkabeln"},
+    {"type": "pc_scan", "name": "Virenscan"},
+    {"type": "printer", "name": "Druckerpapier auffüllen"},
+    {"type": "bunsen", "name": "Bunsenbrenner einstellen"},
+    {"type": "chemical", "name": "Chemikalien mischen"},
+    {"type": "pencil_case", "name": "Mäppchen packen"},
+    {"type": "keyboard", "name": "Tastatur reinigen"},
+    {"type": "microscope", "name": "Mikroskop fokussieren"},
+    {"type": "circuit", "name": "Schaltkreis reparieren"},
+    {"type": "ball_basket", "name": "Bälle einsammeln"},
+    {"type": "mats", "name": "Matten stapeln"},
+    {"type": "tray_sort", "name": "Tablett sortieren"},
+    {"type": "milk_carton", "name": "Milch einfüllen"},
+    {"type": "pizza", "name": "Pizza schneiden"},
+    {"type": "vending", "name": "Automat klemmt"},
+    {"type": "barcode", "name": "Barcodes scannen"},
+    {"type": "locker", "name": "Spind aufräumen"},
+    {"type": "trash_bin", "name": "Müll wegbringen"},
+    {"type": "pipe_leak", "name": "Rohrbruch dichten"},
 ]
+
+task_buttons = [] # Wird weiter unten nach dem Laden der JSON befüllt
 
 def draw_task_buttons(surface, buttons, player_obj, camera_x, camera_y):
     for btn in buttons:
         r = btn["rect"]
-        t = btn["type"]
         
         player_center = player_obj.rect.center
         button_center = r.center
@@ -311,112 +329,15 @@ def draw_task_buttons(surface, buttons, player_obj, camera_x, camera_y):
         dr.y -= camera_y
         dr_center = dr.center
         
-        if distance < 50:
+        # Einheitlicher, simpler Rahmen für alle Hitboxes (keine spezifischen Bilder/Zeichnungen)
+        pygame.draw.rect(surface, (0, 255, 255), dr, 2, border_radius=4)
+        
+        if distance < 35:
             lbl_text = proximity_font.render(f"[E] {btn['name']}", True, (255, 255, 255))
-            lbl_bg = pygame.Rect(dr_center[0] - lbl_text.get_width() // 2 - 6, dr.y - 32, lbl_text.get_width() + 12, 24)
-            pygame.draw.rect(surface, (20, 20, 20), lbl_bg, border_radius=4)
-            pygame.draw.rect(surface, (0, 220, 100), lbl_bg, width=1, border_radius=4)
+            lbl_bg = pygame.Rect(dr_center[0] - lbl_text.get_width() // 2 - 6, dr.y - 32, lbl_text.get_width() + 10, lbl_text.get_height() + 5)
+            pygame.draw.rect(surface, (20, 20, 20), lbl_bg, border_radius = 4)
+            pygame.draw.rect(surface, (0, 220, 100), lbl_bg, width = 1, border_radius = 4)
             surface.blit(lbl_text, (dr_center[0] - lbl_text.get_width() // 2, dr.y - 30))
-
-        # Render-Anweisungen angepasst auf das kleine Koordinatensystem
-        if t == "books":
-            pygame.draw.rect(surface, (200, 50, 50), (dr.x, dr.y, 18, dr.height), border_radius=3)
-            pygame.draw.rect(surface, (50, 120, 200), (dr.x + 21, dr.y + 10, 18, dr.height - 10), border_radius=3)
-            pygame.draw.rect(surface, (50, 180, 80), (dr.x + 42, dr.y + 5, 18, dr.height - 5), border_radius=3)
-        elif t == "chair_stack":
-            for offset in [0, 15]:
-                cy = dr.y + offset
-                pygame.draw.rect(surface, (160, 100, 60), (dr.x, cy + 20, dr.width, 10))
-                pygame.draw.rect(surface, (140, 80, 40), (dr.x, cy, 8, 20))
-                pygame.draw.line(surface, (50, 50, 50), (dr.x + 5, cy + 30), (dr.x + 5, dr.y + 65), 3)
-                pygame.draw.line(surface, (50, 50, 50), (dr.x + dr.width - 5, cy + 30), (dr.x + dr.width - 5, dr.y + 65), 3)
-        elif t == "vending":
-            pygame.draw.rect(surface, (30, 40, 50), dr, border_radius=5)
-            pygame.draw.rect(surface, (100, 200, 255), (dr.x + 8, dr.y + 10, dr.width - 16, 40))
-            pygame.draw.circle(surface, (230, 50, 50), (dr.x + 18, dr.y + 25), 4)
-            pygame.draw.circle(surface, (230, 200, 50), (dr.x + 32, dr.y + 25), 4)
-            pygame.draw.rect(surface, (200, 200, 200), (dr.right - 12, dr.y + 55, 6, 12)) 
-            pygame.draw.rect(surface, (10, 10, 10), (dr.x + 12, dr.y + 72, dr.width - 24, 12))
-        elif t in ["pc_download", "pc_download_2", "pc_scan"]:
-            pygame.draw.rect(surface, (190, 195, 200), (dr.x, dr.y, dr.width, dr.height - 15), border_radius=4)
-            pygame.draw.rect(surface, (20, 20, 20), (dr.x + 4, dr.y + 4, dr.width - 8, dr.height - 23))
-            pygame.draw.rect(surface, (130, 135, 140), (dr.x + dr.width//2 - 6, dr.y + dr.height - 15, 12, 15))
-            if "download" in t: pygame.draw.rect(surface, (0, 200, 50), (dr.x + 10, dr.y + 15, dr.width - 20, 8))
-            else:
-                pygame.draw.line(surface, (220, 40, 40), (dr.x + 15, dr.y + 6), (dr.right - 15, dr.bottom - 25), 3)
-                pygame.draw.line(surface, (220, 40, 40), (dr.right - 15, dr.y + 6), (dr.x + 15, dr.bottom - 25), 3)
-        elif t == "window":
-            pygame.draw.rect(surface, (100, 180, 240), dr)
-            pygame.draw.rect(surface, (240, 240, 240), dr, width=4)
-            pygame.draw.line(surface, (240, 240, 240), (dr.centerx, dr.y), (dr.centerx, dr.bottom), 3)
-            pygame.draw.line(surface, (240, 240, 240), (dr.x, dr.centery), (dr.right, dr.centery), 3)
-        elif t == "board":
-            pygame.draw.rect(surface, (30, 90, 50), dr)
-            pygame.draw.rect(surface, (139, 69, 19), dr, width=4)
-            pygame.draw.line(surface, (255, 255, 255), (dr.x + 15, dr.y + 15), (dr.x + 40, dr.y + 20), 2)
-        elif t == "projector":
-            pygame.draw.rect(surface, (220, 220, 220), (dr.x, dr.y, dr.width, dr.height - 10), border_radius=3)
-            pygame.draw.circle(surface, (50, 50, 50), (dr.right - 15, dr.y + dr.height // 2 - 5), 8)
-            pygame.draw.polygon(surface, (255, 255, 200), [(dr.right - 10, dr.y + 15), (dr.right + 20, dr.y - 5), (dr.right + 20, dr.y + 35)])
-        elif t == "printer":
-            pygame.draw.rect(surface, (100, 105, 110), (dr.x, dr.y, dr.width, dr.height - 15), border_top_left_radius=5, border_top_right_radius=5)
-            pygame.draw.rect(surface, (20, 20, 20), (dr.x + 10, dr.y + dr.height - 20, dr.width - 20, 6))
-            pygame.draw.rect(surface, (255, 255, 255), (dr.x + 15, dr.y + dr.height - 15, dr.width - 30, 15))
-        elif t == "bunsen":
-            pygame.draw.line(surface, (80, 80, 80), (dr.centerx, dr.y + 20), (dr.centerx, dr.bottom), 4)
-            pygame.draw.rect(surface, (50, 80, 200), (dr.x, dr.bottom - 12, dr.width, 12), border_radius=3)
-            pygame.draw.polygon(surface, (255, 120, 0), [(dr.centerx, dr.y), (dr.centerx - 10, dr.y + 22), (dr.centerx + 10, dr.y + 22)])
-        elif t == "chemical":
-            pygame.draw.rect(surface, (200, 220, 240), (dr.centerx - 6, dr.y, 12, 30))
-            pygame.draw.circle(surface, (200, 220, 240), (dr.centerx, dr.bottom - 22), 22)
-            pygame.draw.circle(surface, (150, 50, 200), (dr.centerx, dr.bottom - 20), 16)
-        elif t == "pencil_case":
-            pygame.draw.rect(surface, (210, 90, 150), dr, border_radius=8)
-            pygame.draw.line(surface, (50, 50, 50), (dr.x, dr.centery), (dr.right, dr.centery), 3)
-        elif t == "keyboard":
-            pygame.draw.rect(surface, (40, 40, 40), dr, border_radius=4)
-            for i in range(3): pygame.draw.line(surface, (200, 200, 200), (dr.x + 5, dr.y + 8 + i*10), (dr.right - 5, dr.y + 8 + i*10), 2)
-        elif t == "microscope":
-            pygame.draw.rect(surface, (40, 40, 45), (dr.x + 5, dr.bottom - 10, dr.width - 10, 10))
-            pygame.draw.line(surface, (100, 100, 100), (dr.x + 10, dr.bottom - 10), (dr.x + 10, dr.y + 15), 5)
-            pygame.draw.rect(surface, (200, 200, 200), (dr.x + 12, dr.y + 10, 14, 25))
-        elif t == "circuit":
-            pygame.draw.rect(surface, (20, 120, 60), dr, border_radius=4)
-            pygame.draw.line(surface, (200, 200, 200), (dr.x + 10, dr.y + 10), (dr.x + 30, dr.y + 30), 3)
-            pygame.draw.circle(surface, (220, 220, 50), (dr.x + 10, dr.y + 10), 5)
-        elif t == "ball_basket":
-            pygame.draw.rect(surface, (210, 140, 60), dr, width=3, border_radius=2)
-            pygame.draw.circle(surface, (230, 90, 20), (dr.x + 20, dr.y + 40), 12)
-            pygame.draw.circle(surface, (230, 90, 20), (dr.x + 40, dr.y + 35), 12)
-        elif t == "mats":
-            for i in range(3): pygame.draw.rect(surface, (30, 90, 180), (dr.x, dr.y + i*13, dr.width, 10), border_radius=2)
-        elif t == "tray_sort":
-            pygame.draw.rect(surface, (150, 155, 160), dr, width=3)
-            pygame.draw.line(surface, (180, 50, 50), (dr.x + 5, dr.y + 15), (dr.right - 5, dr.y + 15), 4)
-            pygame.draw.line(surface, (50, 150, 50), (dr.x + 5, dr.y + 35), (dr.right - 5, dr.y + 35), 4)
-        elif t == "milk_carton":
-            pygame.draw.rect(surface, (240, 240, 240), (dr.x, dr.y + 15, dr.width, dr.height - 15))
-            pygame.draw.polygon(surface, (100, 150, 220), [(dr.x, dr.y + 15), (dr.centerx, dr.y), (dr.right, dr.y + 15)])
-            pygame.draw.rect(surface, (100, 150, 220), (dr.x, dr.y + 30, dr.width, 12))
-        elif t == "pizza":
-            pygame.draw.circle(surface, (220, 160, 60), dr_center, dr.width // 2)
-            pygame.draw.circle(surface, (200, 40, 40), dr_center, dr.width // 2 - 4)
-            pygame.draw.circle(surface, (130, 20, 20), (dr_center[0] - 10, dr_center[1] - 5), 5)
-        elif t == "barcode":
-            pygame.draw.rect(surface, (30, 30, 30), (dr.x + 15, dr.y, dr.width - 30, dr.height))
-            pygame.draw.rect(surface, (60, 65, 70), (dr.x, dr.y, dr.width, 22), border_radius=4)
-            pygame.draw.line(surface, (255, 0, 0), (dr.x + 5, dr.y + 11), (dr.right - 5, dr.y + 11), 2)
-        elif t == "locker":
-            pygame.draw.rect(surface, (120, 130, 140), dr, border_radius=2)
-            pygame.draw.rect(surface, (80, 90, 100), (dr.x + 5, dr.y + 5, dr.width - 10, dr.height - 10))
-            pygame.draw.line(surface, (20, 20, 20), (dr.right - 12, dr.y + dr.height // 2 - 8), (dr.right - 12, dr.y + dr.height // 2 + 8), 3)
-        elif t == "trash_bin":
-            pygame.draw.polygon(surface, (50, 50, 50), [(dr.x + 8, dr.bottom), (dr.right - 8, dr.bottom), (dr.right, dr.y + 15), (dr.x, dr.y + 15)])
-            pygame.draw.rect(surface, (70, 70, 70), (dr.x - 4, dr.y, dr.width + 8, 15), border_radius=3)
-        elif t == "pipe_leak":
-            pygame.draw.rect(surface, (100, 100, 100), dr)
-            pygame.draw.rect(surface, (50, 150, 255), (dr.centerx - 5, dr.y - 15, 10, 15))
-        pygame.draw.rect(surface, (20, 20, 20), dr, width=2, border_radius=4)
 
 # ===================
 # LOBBY MENÜ DRAWING
@@ -466,7 +387,19 @@ except Exception as e:
     pygame.quit()
     sys.exit()
 
-hitboxes, vents, plants = load_hitboxes(os.path.join(base_path, "Hitboxes.json"))
+# Hitboxen und Task-Hitboxen aus der JSON laden
+hitboxes, vents, plants, tasks_hitboxes, spawnpoints = load_hitboxes(os.path.join(base_path, "Hitboxes.json"))
+
+# Task Buttons dynamisch anhand des Hitbox-Indexes generieren
+for i, rect in enumerate(tasks_hitboxes):
+    if i < len(TASK_TEMPLATES):
+        template = TASK_TEMPLATES[i]
+        task_buttons.append({
+            "rect": rect,
+            "type": template["type"],
+            "task_index": i,
+            "name": template["name"]
+        })
 
 # =========================
 # HAUPTSCHLEIFE
@@ -484,7 +417,7 @@ while running:
 
         if state == "menu":
             if event.type == pygame.KEYDOWN and event.key == pygame.K_RETURN:
-                if connect_to_server(ip_input.text, name_input.text):
+                if connect_to_server(ip_input.text, name_input.text, spawnpoints):
                     state = "lobby"
             ip_input.handle_event(event)
             name_input.handle_event(event)
