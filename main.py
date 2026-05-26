@@ -18,19 +18,29 @@ INTERNAL_SIZE = TILE_SIZE * TILES_VISIBLE  # 360x360 Pixel Renderfläche
 PLAYER_SPEED = 3
 PORT = 5555
 
+VISION_RADIUS = 7.2 * TILE_SIZE  # 6 Tiles Sichtweite
+FADE_SPEED = 15                # Wie schnell die Deckkraft (0-255) pro Frame steigt/fällt
+player_visibility = {}
+
 pygame.init()
 
-# Hauptfenster-Größe (Lobby & Menü nutzen diesen Platz)
-screen_width, screen_height = 1200, 900
-screen = pygame.display.set_mode((screen_width, screen_height))
+# Hauptfenster auf VOLLBILD setzen und Auflösung automatisch ermitteln
+screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
 WIDTH = screen.get_width()
 HEIGHT = screen.get_height()
 
-pygame.display.set_caption("Thalheimer is Among Us - Map Edition")
+pygame.display.set_caption("Thalheimer is Among Us")
 clock = pygame.time.Clock()
 
 # Internal Surface für die pixelgenaue Map-Skalierung
 internal_surface = pygame.Surface((INTERNAL_SIZE, INTERNAL_SIZE))
+
+# Sichtmaske (Fog of War) initialisieren
+fog_overlay = pygame.Surface((INTERNAL_SIZE, INTERNAL_SIZE))
+fog_overlay.fill((0, 0, 0))
+# Schneidet einen sichtbaren Kreis in der Mitte aus
+pygame.draw.circle(fog_overlay, (255, 255, 255), (INTERNAL_SIZE // 2, INTERNAL_SIZE // 2), VISION_RADIUS)
+fog_overlay.set_colorkey((255, 255, 255))
 
 # =========================
 # BILDER LADEN & SKALIEREN
@@ -118,10 +128,10 @@ class TextInput:
 # MAP & HITBOX LOADER
 # =========================
 def load_hitboxes(filepath):
-    hitboxes, vents, plants, tasks_hitboxes, spawnpoints = [], [], [], [], []
+    hitboxes, vents, plants, tasks_hitboxes, mapwalls, spawnpoints = [], [], [], [], [], []
     if not os.path.exists(filepath):
         print(f"WARNUNG: Hitbox-Datei nicht gefunden: {filepath}")
-        return hitboxes, vents, plants, tasks_hitboxes, spawnpoints
+        return hitboxes, vents, plants, tasks_hitboxes, mapwalls, spawnpoints
     
     with open(filepath, "r", encoding="utf-8-sig") as f:
         map_data = json.load(f)
@@ -161,16 +171,24 @@ def load_hitboxes(filepath):
                 for i, tile_id in enumerate(layer["data"]):
                     if tile_id != 0:
                         tasks_hitboxes.append(pygame.Rect((i % map_width) * TILE_SIZE, (i // map_width) * TILE_SIZE, TILE_SIZE, TILE_SIZE))
-        elif name in ["Spawnpoints", "Spawnpoints"]:
+        if name in ["Hitbox", "Hitbox"]:
             if "objects" in layer:
                 for obj in layer["objects"]:
-                    spawnpoints.append(pygame.Rect(obj["x"], obj["y"], 0, 0))
+                    mapwalls.append(pygame.Rect(obj["x"], obj["y"], obj["width"], obj["height"]))
+            elif "data" in layer:
+                for i, tile_id in enumerate(layer["data"]):
+                    if tile_id != 0:
+                        mapwalls.append(pygame.Rect((i % map_width) * TILE_SIZE, (i // map_width) * TILE_SIZE, TILE_SIZE, TILE_SIZE))
+        if name in ["Spawnpoints", "Spawnpoints"]:
+            if "objects" in layer:
+                for obj in layer["objects"]:
+                    spawnpoints.append(pygame.Rect(obj["x"], obj["y"], obj["width"], obj["height"]))
             elif "data" in layer:
                 for i, tile_id in enumerate(layer["data"]):
                     if tile_id != 0:
                         spawnpoints.append(pygame.Rect((i % map_width) * TILE_SIZE, (i // map_width) * TILE_SIZE, TILE_SIZE, TILE_SIZE))
                         
-    return hitboxes, vents, plants, tasks_hitboxes, spawnpoints
+    return hitboxes, vents, plants, tasks_hitboxes, mapwalls, spawnpoints
 
 def get_current_vent(player, vents):
     for vent in vents:
@@ -192,6 +210,17 @@ player_count = 0
 host_id = 0
 game_started = False
 state = "menu"
+
+def has_line_of_sight(p1, p2, hitboxes):
+    min_x, max_x = min(p1[0], p2[0]), max(p1[0], p2[0])
+    min_y, max_y = min(p1[1], p2[1]), max(p1[1], p2[1])
+    line_rect = pygame.Rect(min_x, min_y, (max_x - min_x) or 1, (max_y - min_y) or 1)
+    
+    for box in hitboxes:
+        if line_rect.colliderect(box):
+            if box.clipline(p1, p2):
+                return False
+    return True
 
 def setup_socket(s):
     s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -267,9 +296,10 @@ def connect_to_server(ip, name, spawnpoints):
 # TASK SYSTEM
 # ===================
 task_manager = tasks.TaskManager()
-proximity_font = pygame.font.SysFont("arial", 11, bold=True)
+proximity_font = pygame.font.SysFont("arial", 12, bold=True)
+name_font = pygame.font.SysFont("arial", 14, bold=True)
 already_done_timer = 0
-warning_font = pygame.font.SysFont("arial", 11, bold=True)
+warning_font = pygame.font.SysFont("arial", 12, bold=True)
 
 tasks_instances = [
     tasks.BookSortTask(screen), tasks.ChairStackTask(screen), tasks.WindowTask(screen),
@@ -285,7 +315,6 @@ tasks_instances = [
 for t in tasks_instances:
     task_manager.add_task(t)
 
-# Template zur dynamischen Generierung der Task-Buttons aus der JSON
 TASK_TEMPLATES = [
     {"type": "books", "name": "Bücher sortieren"},
     {"type": "chair_stack", "name": "Stühle stapeln"},
@@ -313,63 +342,68 @@ TASK_TEMPLATES = [
     {"type": "pipe_leak", "name": "Rohrbruch dichten"},
 ]
 
-task_buttons = [] # Wird weiter unten nach dem Laden der JSON befüllt
+task_buttons = []
 
 def draw_task_buttons(surface, buttons, player_obj, camera_x, camera_y):
     for btn in buttons:
         r = btn["rect"]
-        
         player_center = player_obj.rect.center
         button_center = r.center
         distance = math.hypot(player_center[0] - button_center[0], player_center[1] - button_center[1])
         
-        # Auf die Kamera-Ansicht umrechnen
         dr = r.copy()
         dr.x -= camera_x
         dr.y -= camera_y
         dr_center = dr.center
         
-        # Einheitlicher, simpler Rahmen für alle Hitboxes (keine spezifischen Bilder/Zeichnungen)
         pygame.draw.rect(surface, (0, 255, 255), dr, 2, border_radius=4)
         
-        if distance < 35:
+        if distance < 30:
             lbl_text = proximity_font.render(f"[E] {btn['name']}", True, (255, 255, 255))
             lbl_bg = pygame.Rect(dr_center[0] - lbl_text.get_width() // 2 - 6, dr.y - 32, lbl_text.get_width() + 10, lbl_text.get_height() + 5)
-            pygame.draw.rect(surface, (20, 20, 20), lbl_bg, border_radius = 4)
-            pygame.draw.rect(surface, (0, 220, 100), lbl_bg, width = 1, border_radius = 4)
+            pygame.draw.rect(surface, (20, 20, 20), lbl_bg, border_radius=4)
+            pygame.draw.rect(surface, (0, 220, 100), lbl_bg, width=1, border_radius=4)
             surface.blit(lbl_text, (dr_center[0] - lbl_text.get_width() // 2, dr.y - 30))
 
-# ===================
-# LOBBY MENÜ DRAWING
-# ===================
+# =========================
+# LOBBY MENÜ DRAWING (Dynamisch zentriert für Vollbild)
+# =========================
 menu_font = pygame.font.SysFont("arial", 40)
 small_font = pygame.font.SysFont("arial", 28)
-ip_input = TextInput(420, 300, 350, 60, small_font)
-name_input = TextInput(420, 400, 350, 60, small_font)
+
+ip_input = TextInput(WIDTH // 2 - 175, HEIGHT // 2 - 100, 350, 60, small_font)
+name_input = TextInput(WIDTH // 2 - 175, HEIGHT // 2 + 20, 350, 60, small_font)
 
 def draw_menu():
     screen.fill((25, 25, 35))
     title = menu_font.render("MULTIPLAYER LOGIN", True, (255, 255, 255))
-    screen.blit(title, (WIDTH // 2 - title.get_width() // 2, 150))
-    screen.blit(small_font.render("SERVER IP", True, (200, 200, 200)), (420, 260))
-    screen.blit(small_font.render("NAME", True, (200, 200, 200)), (420, 360))
+    screen.blit(title, (WIDTH // 2 - title.get_width() // 2, HEIGHT // 2 - 220))
+    
+    screen.blit(small_font.render("SERVER IP", True, (200, 200, 200)), (WIDTH // 2 - 175, HEIGHT // 2 - 140))
+    screen.blit(small_font.render("NAME", True, (200, 200, 200)), (WIDTH // 2 - 175, HEIGHT // 2 - 20))
+    
     ip_input.draw(screen)
     name_input.draw(screen)
-    screen.blit(small_font.render("ENTER = CONNECT", True, (100, 255, 100)), (460, 520))
+    
+    connect_txt = small_font.render("ENTER = CONNECT", True, (100, 255, 100))
+    screen.blit(connect_txt, (WIDTH // 2 - connect_txt.get_width() // 2, HEIGHT // 2 + 120))
 
 def draw_lobby():
     screen.fill((20, 20, 40))
     title = menu_font.render("LOBBY", True, (255, 255, 255))
     screen.blit(title, (WIDTH // 2 - title.get_width() // 2, 60))
+    
     y = 180
     for pid, pname in player_names.items():
         role = "HOST" if pid == host_id else "PLAYER"
-        screen.blit(small_font.render(f"{pname} ({role})", True, (255, 255, 0)), (100, y))
+        screen.blit(small_font.render(f"{pname} ({role})", True, (255, 255, 0)), (WIDTH // 2 - 150, y))
         y += 50
-    screen.blit(small_font.render(f"{len(player_names)}/15 PLAYERS", True, (255, 255, 255)), (100, HEIGHT - 100))
+        
+    count_txt = small_font.render(f"{len(player_names)}/15 PLAYERS", True, (255, 255, 255))
+    screen.blit(count_txt, (WIDTH // 2 - 150, HEIGHT - 140))
     
     if my_id == host_id:
-        btn = pygame.Rect(WIDTH - 250, HEIGHT - 140, 180, 70)
+        btn = pygame.Rect(WIDTH // 2 + 100, HEIGHT - 160, 180, 70)
         pygame.draw.rect(screen, (0, 220, 100), btn, border_radius=10)
         txt = small_font.render("START", True, (0, 0, 0))
         screen.blit(txt, (btn.centerx - txt.get_width() // 2, btn.centery - txt.get_height() // 2))
@@ -387,10 +421,16 @@ except Exception as e:
     pygame.quit()
     sys.exit()
 
-# Hitboxen und Task-Hitboxen aus der JSON laden
-hitboxes, vents, plants, tasks_hitboxes, spawnpoints = load_hitboxes(os.path.join(base_path, "Hitboxes.json"))
+MAP_WIDTH_PX, MAP_HEIGHT_PX = floor_img.get_size()
+MINIMAP_WIDTH = 800  
+MINIMAP_HEIGHT = int(MAP_HEIGHT_PX * (MINIMAP_WIDTH / MAP_WIDTH_PX))
+minimap_bg = pygame.Surface((MINIMAP_WIDTH, MINIMAP_HEIGHT))
 
-# Task Buttons dynamisch anhand des Hitbox-Indexes generieren
+minimap_bg.blit(pygame.transform.scale(floor_img, (MINIMAP_WIDTH, MINIMAP_HEIGHT)), (0, 0))
+minimap_bg.blit(pygame.transform.scale(walls_img, (MINIMAP_WIDTH, MINIMAP_HEIGHT)), (0, 0))
+
+hitboxes, vents, plants, tasks_hitboxes, mapwalls, spawnpoints = load_hitboxes(os.path.join(base_path, "Hitboxes.json"))
+
 for i, rect in enumerate(tasks_hitboxes):
     if i < len(TASK_TEMPLATES):
         template = TASK_TEMPLATES[i]
@@ -405,6 +445,7 @@ for i, rect in enumerate(tasks_hitboxes):
 # HAUPTSCHLEIFE
 # =========================
 running = True
+show_minimap = False  
 
 while running:
     dt = clock.tick(60) / 1000.0
@@ -424,7 +465,9 @@ while running:
 
         elif state == "lobby":
             if event.type == pygame.MOUSEBUTTONDOWN and my_id == host_id:
-                if pygame.Rect(WIDTH - 250, HEIGHT - 140, 180, 70).collidepoint(event.pos):
+                # Klick-Erkennung an neues Layout angepasst
+                btn = pygame.Rect(WIDTH // 2 + 100, HEIGHT - 160, 180, 70)
+                if btn.collidepoint(event.pos):
                     try:
                         sock.sendall(struct.pack("!B", 99))
                     except: pass
@@ -435,14 +478,17 @@ while running:
                     if task_manager.active_task:
                         task_manager.reset_active_task()
                         task_manager.active_task = None
+                    elif show_minimap:
+                        show_minimap = False
                     else:
                         running = False
                         pygame.quit()
                         sys.exit()
 
-                # --- INTERAKTIONSTASTEN ---
-                # 1. Tasks erledigen (E)
-                if event.key == pygame.K_e and task_manager.active_task is None:
+                if event.key == pygame.K_m and task_manager.active_task is None:
+                    show_minimap = not show_minimap
+
+                if event.key == pygame.K_e and task_manager.active_task is None and not show_minimap:
                     for btn in task_buttons:
                         distance = math.hypot(my_player.rect.centerx - btn["rect"].centerx, my_player.rect.centery - btn["rect"].centery)
                         if distance < 50:
@@ -450,26 +496,25 @@ while running:
                                 already_done_timer = 90
                             break
                 
-                # 2. Vents und Pflanzen benutzen (Space)
-                if event.key == pygame.K_SPACE:
+                if event.key == pygame.K_SPACE and not show_minimap:
                     cv = get_current_vent(my_player, vents)
                     if cv:
                         next_vent = vents[(vents.index(cv) + 1) % len(vents)]
                         my_player.rect.center = next_vent.center
                         try: sock.sendall(struct.pack('!Bii', 2, int(my_player.rect.x), int(my_player.rect.y)))
                         except: pass
-                    else:
-                        cp = get_current_plant(my_player, plants)
-                        if cp:
-                            next_plant = plants[(plants.index(cp) + 1) % len(plants)]
-                            my_player.rect.center = next_plant.center
-                            try: sock.sendall(struct.pack('!Bii', 2, int(my_player.rect.x), int(my_player.rect.y)))
-                            except: pass
+
+                elif event.key == pygame.K_HASH and not show_minimap:
+                    cp = get_current_plant(my_player, plants)
+                    if cp:
+                        next_plant = plants[(plants.index(cp) + 1) % len(plants)]
+                        my_player.rect.center = next_plant.center
+                        try: sock.sendall(struct.pack('!Bii', 2, int(my_player.rect.x), int(my_player.rect.y)))
+                        except: pass
 
         task_manager.handle_event(event)
 
-    # --- LOGIK & NETZWERK-UPDATES ---
-    if state == "game" and task_manager.active_task is None and game_started:
+    if state == "game" and task_manager.active_task is None and not show_minimap and game_started:
         if my_player.move(pygame.key.get_pressed(), hitboxes):
             try:
                 sock.sendall(struct.pack('!Bii', 2, int(my_player.rect.x), int(my_player.rect.y)))
@@ -483,38 +528,80 @@ while running:
     elif state == "lobby" and not game_started:
         draw_lobby()
     elif game_started:
-        # 1. Kamera-Position berechnen
         camera_x = my_player.rect.x - (INTERNAL_SIZE // 2) + (PLAYER_SIZE // 2)
         camera_y = my_player.rect.y - (INTERNAL_SIZE // 2) + (PLAYER_SIZE // 2)
 
-        # 2. Auf interner Surface zeichnen
+        # Spielfeld aufbauen
         internal_surface.fill((40, 80, 40))
         internal_surface.blit(floor_img, (-camera_x, -camera_y))
         internal_surface.blit(walls_img, (-camera_x, -camera_y))
         internal_surface.blit(objects_img, (-camera_x, -camera_y))
 
-        # Task Buttons & Overlays rendern
         draw_task_buttons(internal_surface, task_buttons, my_player, camera_x, camera_y)
 
         # Andere Spieler zeichnen
+        my_center = my_player.rect.center
         for p_id, pos in other_players.items():
             enemy_img = player_images.get(p_id % len(player_images))
-            if enemy_img:
-                internal_surface.blit(enemy_img, (pos[0] - camera_x, pos[1] - camera_y))
+            if not enemy_img:
+                continue
+            
+            enemy_center = (pos[0] + (PLAYER_SIZE // 2), pos[1] + (PLAYER_SIZE // 2))
+            distance = math.hypot(my_center[0] - enemy_center[0], my_center[1] - enemy_center[1])
+            is_visible = False
+            
+            if distance <= VISION_RADIUS:
+                if has_line_of_sight(my_center, enemy_center, mapwalls):
+                    is_visible = True
+                    
+            if p_id not in player_visibility:
+                player_visibility[p_id] = 0.0
+                
+            if is_visible:
+                player_visibility[p_id] = min(255.0, player_visibility[p_id] + FADE_SPEED)
+            else:
+                player_visibility[p_id] = max(0.0, player_visibility[p_id] - FADE_SPEED)
+                
+            current_alpha = int(player_visibility[p_id])
+            
+            if current_alpha > 0:
+                img_copy = enemy_img.copy()
+                img_copy.set_alpha(current_alpha)
+                internal_surface.blit(img_copy, (pos[0] - camera_x, pos[1] - camera_y))
+                
+                # Mitspieler-Namen zeichnen (inklusive Transparenz-Fade)
+                e_name = player_names.get(p_id, f"Player {p_id}")
+                name_text = name_font.render(e_name, True, (255, 255, 255))
+                name_text.set_alpha(current_alpha)
+                nx = (pos[0] - camera_x) + (PLAYER_SIZE // 2) - (name_text.get_width() // 2)
+                ny = (pos[1] - camera_y) - 16
+                internal_surface.blit(name_text, (nx, ny))
 
         # Eigenen Spieler zeichnen
         my_player.draw(internal_surface, camera_x, camera_y)
+        
+        # Eigenen Namen über dem Kopf zeichnen
+        my_name = player_names.get(my_id, "Ich")
+        my_name_text = name_font.render(my_name, True, (255, 255, 255))
+        mx = (my_player.rect.x - camera_x) + (PLAYER_SIZE // 2) - (my_name_text.get_width() // 2)
+        my = (my_player.rect.y - camera_y) - 16
+        internal_surface.blit(my_name_text, (mx, my))
 
-        # 3. Interne Surface skalieren & zentrieren
+        # SIGHT MASK / FOG OF WAR DARÜBERLEGEN
+        # Schwärzt alles außerhalb des Sichtkreises ab
+        internal_surface.blit(fog_overlay, (0, 0))
+
+        # Skalieren & Zentrieren auf den Bildschirm
         scaled_size = min(WIDTH, HEIGHT)
         scaled_surface = pygame.transform.scale(internal_surface, (scaled_size, scaled_size))
         draw_x = (WIDTH - scaled_size) // 2
         draw_y = (HEIGHT - scaled_size) // 2
 
-        screen.fill((40, 80, 40))
+        # Bildschirm leeren: Jetzt PURE BLACK für pechschwarze Ränder links und rechts
+        screen.fill((0, 0, 0))
         screen.blit(scaled_surface, (draw_x, draw_y))
 
-        # 4. HUD / Task-Overlays direkt auf den Screen blitten
+        # HUD / Overlays direkt auf den Screen blitten
         if already_done_timer > 0 and task_manager.active_task is None:
             already_done_timer -= 1
             msg_text = warning_font.render("Du hast diese Aufgabe bereits erledigt!", True, (255, 80, 80))
@@ -525,6 +612,21 @@ while running:
 
         task_manager.draw(screen)
         task_manager.update()
+
+        # MINIMAP OVERLAY RENDERING
+        if show_minimap and task_manager.active_task is None:
+            mm_x = (WIDTH - MINIMAP_WIDTH) // 2
+            mm_y = (HEIGHT - MINIMAP_HEIGHT) // 2
+
+            pygame.draw.rect(screen, (25, 25, 30), (mm_x - 12, mm_y - 12, MINIMAP_WIDTH + 24, MINIMAP_HEIGHT + 24), border_radius=12)
+            screen.blit(minimap_bg, (mm_x, mm_y))
+            pygame.draw.rect(screen, (240, 240, 240), (mm_x, mm_y, MINIMAP_WIDTH, MINIMAP_HEIGHT), 2, border_radius=4)
+
+            player_mm_x = mm_x + int((my_player.rect.centerx / MAP_WIDTH_PX) * MINIMAP_WIDTH)
+            player_mm_y = mm_y + int((my_player.rect.centery / MAP_HEIGHT_PX) * MINIMAP_HEIGHT)
+
+            pygame.draw.circle(screen, (255, 30, 30), (player_mm_x, player_mm_y), 8)
+            pygame.draw.circle(screen, (255, 255, 255), (player_mm_x, player_mm_y), 8, 2)
 
     pygame.display.update()
 
