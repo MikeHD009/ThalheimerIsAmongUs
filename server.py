@@ -5,119 +5,192 @@ import struct
 PORT = 5555
 MAX_PLAYERS = 15
 
-# Speichert die Verbindungen: {player_id: conn_socket}
 clients = {}
-# Speichert die aktuellen Positionen: {player_id: (x, y)}
 player_positions = {}
-
 player_names = {}
-game_started = False
-host_id = 0
 
+host_id = 0
+player_id_counter = 0
+
+# =========================
+# LOBBY UPDATE
+# =========================
 def send_lobby_update():
     player_count = len(clients)
 
-    for pid, conn in clients.items():
+    for pid, conn in list(clients.items()):
         try:
-            # Packet Typ 1
+            # packet_type=1, player_count, host_id
             conn.sendall(struct.pack("!BBB", 1, player_count, host_id))
 
-            for other_id, pname in player_names.items():
-                name_bytes = pname.encode()
-                conn.sendall(struct.pack(f"!BB{len(name_bytes)}s", other_id, len(name_bytes), name_bytes))
+            # Alle Spielernamen senden
+            for other_id, name in player_names.items():
+                name_bytes = name.encode()
+
+                conn.sendall(
+                    struct.pack(
+                        f"!BB{len(name_bytes)}s",
+                        other_id,
+                        len(name_bytes),
+                        name_bytes
+                    )
+                )
 
         except:
-            pass
+            disconnect(player_id=pid)
 
-def broadcast_to_all(data, exclude_id = None):
-    """Sendet Daten an alle verbundenen Spieler."""
-    for player_id, conn in list(clients.items()):
-        if player_id != exclude_id:
+# =========================
+# BROADCAST
+# =========================
+def broadcast_to_all(data, exclude_id=None):
+    for pid, conn in list(clients.items()):
+        if pid != exclude_id:
             try:
                 conn.sendall(data)
             except:
-                disconnect_client(player_id)
+                disconnect(pid)
 
-def disconnect_client(player_id):
-    """Entfernt einen Spieler, wenn er das Spiel verlässt."""
+# =========================
+# DISCONNECT
+# =========================
+def disconnect(player_id):
+    global host_id
+
+    print(f"[SERVER] Player {player_id} disconnected")
+
     if player_id in clients:
-        print(f"Spieler {player_id} hat die Verbindung verloren.")
-        clients[player_id].close()
+        try:
+            clients[player_id].close()
+        except:
+            pass
+
         del clients[player_id]
+
+    if player_id in player_names:
+        del player_names[player_id]
+
     if player_id in player_positions:
         del player_positions[player_id]
-        # Ein "Disconnect-Paket" an alle senden (z.B. X und Y auf -1000 setzen)
-        disconnect_packet = struct.pack('!BBii', 4, player_id, -1000, -1000)
-        broadcast_to_all(disconnect_packet)
+
+    # Disconnect Packet senden
+    disconnect_packet = struct.pack(
+        "!BBii",
+        4,              # packet type
+        player_id,
+        -1000,
+        -1000
+    )
+
+    broadcast_to_all(disconnect_packet)
+
+    # Neuer Host wenn Host disconnected
+    if player_id == host_id:
+        if len(clients) > 0:
+            host_id = list(clients.keys())[0]
+        else:
+            host_id = 0
 
     send_lobby_update()
 
+# =========================
+# CLIENT THREAD
+# =========================
 def handle_client(conn, player_id):
-    global player_positions, game_started, host_id
-    print(f"Thread für Spieler {player_id} gestartet.")
-    
-    # Aktiviert TCP_NODELAY für minimale Verzögerung
+    global host_id
+
+    print(f"[SERVER] Thread gestartet für Player {player_id}")
+
     conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
 
-    while True:
-        try:
+    try:
+        while True:
             data = conn.recv(1)
+
             if not data:
                 break
 
-            packet_type = struct.unpack("!B", data)[0]
-            print("Packet empfangen:", packet_type, "von", player_id)
-            # =========================
-            # SPIEL STARTEN
-            # =========================
-            if packet_type == 99:
-                if player_id == host_id and not game_started:
-                    game_started = True
-                    print("Spiel gestartet!")
+            packet = struct.unpack("!B", data)[0]
 
-                    for pid, conn in list(clients.items()):
-                        try:
-                            conn.sendall(struct.pack("!B", 3))
-                        except:
-                            disconnect_client(pid)
+            print(f"[SERVER] Packet {packet} von {player_id}")
 
             # =========================
-            # POSITIONSDATEN
+            # START BUTTON
             # =========================
-            elif packet_type == 2:
-                data = b""
+            if packet == 10:
+                print("[SERVER] Host hat Start gedrückt")
 
-                while len(data) < 9:
-                    packet = conn.recv(9 - len(data))
+                for c in list(clients.values()):
+                    try:
+                        c.sendall(struct.pack("!B", 10))
+                    except:
+                        pass
 
-                    if not packet:
+            # =========================
+            # GAMEPLAY START
+            # =========================
+            elif packet == 99:
+                print(f"[SERVER] Gameplay aktiviert von {player_id}")
+
+                for pid, c in list(clients.items()):
+                    try:
+                        c.sendall(struct.pack("!B", 3))
+                    except:
+                        disconnect(pid)
+
+            # =========================
+            # POSITION UPDATE
+            # =========================
+            elif packet == 2:
+
+                buffer = b""
+
+                while len(buffer) < 8:
+                    chunk = conn.recv(8 - len(buffer))
+
+                    if not chunk:
                         break
 
-                    data += packet
+                    buffer += chunk
 
-                if len(data) < 9:
+                if len(buffer) < 8:
                     break
 
-                x, y = struct.unpack("!ii", data)
+                x, y = struct.unpack("!ii", buffer)
+
                 player_positions[player_id] = (x, y)
-                update_packet = struct.pack("!BBii", player_id, x, y)
-                broadcast_to_all(update_packet, exclude_id = player_id)
 
-                for other_id, pos in player_positions.items():
-                    if other_id != player_id:
-                        conn.sendall(struct.pack("!BBii", other_id, pos[0], pos[1]))
+                update_packet = struct.pack(
+                    "!BBii",
+                    2,
+                    player_id,
+                    x,
+                    y
+                )
 
-        except Exception as e:
-            print(f"CLIENT ERROR {player_id}: {e}")
-            break
+                broadcast_to_all(
+                    update_packet,
+                    exclude_id=player_id
+                )
 
-    disconnect_client(player_id)
+    except Exception as e:
+        print(f"[SERVER ERROR] Player {player_id}: {e}")
 
+    disconnect(player_id)
+
+# =========================
+# SERVER START
+# =========================
 def start_server():
+    global player_id_counter
+    global host_id
+
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    
-    # Lokale IP ermitteln
+
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+    # Eigene IP automatisch holen
     temp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
     try:
         temp.connect(("8.8.8.8", 80))
         host_ip = temp.getsockname()[0]
@@ -126,38 +199,64 @@ def start_server():
 
     server.bind((host_ip, PORT))
     server.listen(MAX_PLAYERS)
-    print(f"Zentraler Server gestartet auf IP: {host_ip} : {PORT}")
 
-    player_id_counter = 0
+    print(f"[SERVER] Läuft auf {host_ip}:{PORT}")
 
     while True:
+
         conn, addr = server.accept()
 
         if len(clients) >= MAX_PLAYERS:
-            conn.close() # Server voll
+            conn.close()
             continue
 
-        print(f"Neuer Spieler verbunden von: {addr} -> Erhält ID: {player_id_counter}")
+        print(f"[SERVER] Neue Verbindung von {addr}")
 
-        # Namen empfangen
-        name_length = struct.unpack("!B", conn.recv(1))[0]
-        player_name = conn.recv(name_length).decode()
+        try:
+            # Namen empfangen
+            name_len = struct.unpack("!B", conn.recv(1))[0]
 
-        player_names[player_id_counter] = player_name
-        
-        # 1. Dem Client seine eigene ID schicken, damit er weiß, wer er ist
-        conn.sendall(struct.pack('!B', player_id_counter))
-        
-        # 2. Dem neuen Client die Positionen aller bereits existierenden Spieler schicken
-        for existing_id, pos in player_positions.items():
-            conn.sendall(struct.pack('!BBii', 2, existing_id, pos[0], pos[1]))
+            player_name = conn.recv(name_len).decode()
 
-        clients[player_id_counter] = conn
-        send_lobby_update()
-        
-        # Thread für diesen Spieler starten
-        threading.Thread(target = handle_client, args = (conn, player_id_counter), daemon = True).start()
-        player_id_counter += 1
+            player_names[player_id_counter] = player_name
 
+            # Startposition
+            player_positions[player_id_counter] = (
+                100 + player_id_counter * 30,
+                100
+            )
+
+            # Erster Spieler = Host
+            if len(clients) == 0:
+                host_id = player_id_counter
+
+            # ID senden
+            conn.sendall(
+                struct.pack("!B", player_id_counter)
+            )
+
+            clients[player_id_counter] = conn
+
+            send_lobby_update()
+
+            threading.Thread(
+                target=handle_client,
+                args=(conn, player_id_counter),
+                daemon=True
+            ).start()
+
+            print(
+                f"[SERVER] Player '{player_name}' erhielt ID {player_id_counter}"
+            )
+
+            player_id_counter += 1
+
+        except Exception as e:
+            print("[SERVER ERROR]", e)
+            conn.close()
+
+# =========================
+# MAIN
+# =========================
 if __name__ == "__main__":
     start_server()
