@@ -1,0 +1,103 @@
+{
+    "Map/SizeTest": {
+        "height": 4300,
+        "width": 2
+    },
+    "activeFile": "Kachelsätze/jdt.tsx",
+    "expandedProjectPaths": [
+        ".",
+        "Kachelsätze"
+    ],
+    "file.lastUsedOpenFilter": "Alle Dateien (*)",
+    "fileStates": {
+        "Art Room Spritesheet 1.tsx": {
+            "scaleInDock": 1,
+            "scaleInEditor": 1
+        },
+        "Floor.tsx": {
+            "scaleInDock": 1,
+            "scaleInEditor": 1
+        },
+        "Kachelsätze/4 BigSet.tsx": {
+            "dynamicWrapping": false,
+            "scaleInDock": 4,
+            "scaleInEditor": 2
+        },
+        "Kachelsätze/Classroom_A2.tsx": {
+            "scaleInDock": 4,
+            "scaleInEditor": 1
+        },
+        "Kachelsätze/Classroom_A4.tsx": {
+            "scaleInDock": 4,
+            "scaleInEditor": 1
+        },
+        "Kachelsätze/Door_Wall_Down.tsx": {
+            "scaleInDock": 1,
+            "scaleInEditor": 1
+        },
+        "Kachelsätze/Floor.tsx": {
+            "scaleInDock": 1,
+            "scaleInEditor": 1
+        },
+        "Kachelsätze/Wall_Down.tsx": {
+            "scaleInDock": 1,
+            "scaleInEditor": 1
+        },
+        "Kachelsätze/jdt.tsx": {
+            "dynamicWrapping": true,
+            "scaleInDock": 0.33,
+            "scaleInEditor": 1
+        },
+        "Kachelsätze/swsdcf.tsx": {
+            "dynamicWrapping": true,
+            "scaleInDock": 1,
+            "scaleInEditor": 1
+        },
+        "Map.tmx": {
+            "scale": 1.5,
+            "selectedLayer": 1,
+            "viewCenter": {
+                "x": 702.3333333333333,
+                "y": 980
+            }
+        },
+        "strokespritesheet20121.tsx": {
+            "scaleInDock": 1,
+            "scaleInEditor": 1
+        }
+    },
+    "last.exportedFilePath": "C:/Users/leand/Desktop/Python/Freizeit/ThalheimerIsAmongUs/Thalheimer-is-Among-Us/Thalheimer is Among us/Assets/Map/Map",
+    "last.imagePath": "C:/Users/leand/Desktop/Python/Freizeit/ThalheimerIsAmongUs/Thalheimer-is-Among-Us/Thalheimer is Among us/Assets/Map/Map Assets/Objects/Garden",
+    "map.height": 100,
+    "map.lastUsedExportFilter": "JSON-Kartendateien (*.tmj *.json)",
+    "map.lastUsedFormat": "tmx",
+    "map.tileHeight": 24,
+    "map.tileWidth": 24,
+    "map.width": 100,
+    "openFiles": [
+        "Map.tmx",
+        "Kachelsätze/4 BigSet.tsx",
+        "Kachelsätze/jdt.tsx"
+    ],
+    "project": "Thalheimer_Among_Us.tiled-project",
+    "recentFiles": [
+        "Map.tmx",
+        "Kachelsätze/4 BigSet.tsx",
+        "Kachelsätze/jdt.tsx",
+        "Kachelsätze/swsdcf.tsx",
+        "Kachelsätze/Classroom_A4.tsx",
+        "Kachelsätze/Classroom_A2.tsx",
+        "Kachelsätze/Wall_Down.tsx",
+        "Kachelsätze/Door_Wall_Down.tsx",
+        "Kachelsätze/Floor.tsx",
+        "Floor.tsx",
+        "strokespritesheet20121.tsx",
+        "Art Room Spritesheet 1.tsx"
+    ],
+    "tileset.lastUsedFormat": "tsx",
+    "tileset.tileSize": {
+        "height": 24,
+        "width": 24
+    },
+    "tileset.type": 1
+}
