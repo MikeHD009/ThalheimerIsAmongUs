@@ -256,6 +256,9 @@ def receive_data(sock):
             elif packet_type == 3:
                 game_started = True
                 state = "game"
+                # Spieler auf die In-Game Map teleportieren
+                my_player.rect.x = spawnpoints[my_id].x
+                my_player.rect.y = spawnpoints[my_id].y
                 try:
                     sock.sendall(struct.pack('!Bii', 2, int(my_player.rect.x), int(my_player.rect.y)))
                 except: pass
@@ -284,7 +287,9 @@ def connect_to_server(ip, name, spawnpoints):
         my_id = struct.unpack('!B', sock.recv(1))[0]
         print("Verbunden mit ID:", my_id)
 
-        my_player = Player(spawnpoints[my_id].x, spawnpoints[my_id].y, player_images[my_id % len(player_images)])
+        lx = lobby_spawn_rects[my_id % len(lobby_spawn_rects)].x
+        ly = lobby_spawn_rects[my_id % len(lobby_spawn_rects)].y
+        my_player = Player(lx, ly, player_images[my_id % len(player_images)])
         threading.Thread(target=receive_data, args=(sock,), daemon=True).start()
         connected = True
         return True
@@ -389,24 +394,60 @@ def draw_menu():
     screen.blit(connect_txt, (WIDTH // 2 - connect_txt.get_width() // 2, HEIGHT // 2 + 120))
 
 def draw_lobby():
-    screen.fill((20, 20, 40))
+    # Kamera genau wie im Hauptspiel auf den eigenen Spieler zentrieren
+    camera_x = my_player.rect.x - (INTERNAL_SIZE // 2) + (PLAYER_SIZE // 2)
+    camera_y = my_player.rect.y - (INTERNAL_SIZE // 2) + (PLAYER_SIZE // 2)
+
+    # Auf die interne Renderfläche zeichnen
+    internal_surface.fill((20, 20, 30))
+    internal_surface.blit(lobby_bg, (-camera_x, -camera_y))
+
+    # Andere Spieler in der Lobby zeichnen
+    for p_id, pos in other_players.items():
+        enemy_img = player_images.get(p_id % len(player_images))
+        if enemy_img:
+            internal_surface.blit(enemy_img, (pos[0] - camera_x, pos[1] - camera_y))
+            # Namen der Mitspieler rendern
+            e_name = player_names.get(p_id, f"Player {p_id}")
+            name_text = name_font.render(e_name, True, (255, 255, 255))
+            nx = (pos[0] - camera_x) + (PLAYER_SIZE // 2) - (name_text.get_width() // 2)
+            ny = (pos[1] - camera_y) - 16
+            internal_surface.blit(name_text, (nx, ny))
+
+    # Eigenen Spieler in der Lobby zeichnen
+    my_player.draw(internal_surface, camera_x, camera_y)
+    my_name = player_names.get(my_id, "Ich")
+    my_name_text = name_font.render(my_name, True, (255, 255, 255))
+    mx = (my_player.rect.x - camera_x) + (PLAYER_SIZE // 2) - (my_name_text.get_width() // 2)
+    my = (my_player.rect.y - camera_y) - 16
+    internal_surface.blit(my_name_text, (mx, my))
+
+    # Pixelgenaue Skalierung für das Vollbild-Ergebnis berechnen
+    scaled_size = min(WIDTH, HEIGHT)
+    scaled_surface = pygame.transform.scale(internal_surface, (scaled_size, scaled_size))
+    draw_x = (WIDTH - scaled_size) // 2
+    draw_y = (HEIGHT - scaled_size) // 2
+
+    screen.fill((0, 0, 0))
+    screen.blit(scaled_surface, (draw_x, draw_y))
+
+    # ================= UI OVERLAY (Direkt auf den Hauptbildschirm) =================
     title = menu_font.render("LOBBY", True, (255, 255, 255))
-    screen.blit(title, (WIDTH // 2 - title.get_width() // 2, 60))
+    screen.blit(title, (WIDTH // 2 - title.get_width() // 2, 40))
     
-    y = 180
-    for pid, pname in player_names.items():
-        role = "HOST" if pid == host_id else "PLAYER"
-        screen.blit(small_font.render(f"{pname} ({role})", True, (255, 255, 0)), (WIDTH // 2 - 150, y))
-        y += 50
-        
-    count_txt = small_font.render(f"{len(player_names)}/15 PLAYERS", True, (255, 255, 255))
-    screen.blit(count_txt, (WIDTH // 2 - 150, HEIGHT - 140))
-    
+    # Spielerübersicht links unten
+    count_txt = small_font.render(f"Spieler online: {len(player_names)} / 15", True, (255, 255, 255))
+    screen.blit(count_txt, (40, HEIGHT - 80))
+
+    # Host sieht den grünen Startbutton, Client sieht Wartetext
     if my_id == host_id:
-        btn = pygame.Rect(WIDTH // 2 + 100, HEIGHT - 160, 180, 70)
+        btn = pygame.Rect(WIDTH - 240, HEIGHT - 100, 200, 60)
         pygame.draw.rect(screen, (0, 220, 100), btn, border_radius=10)
         txt = small_font.render("START", True, (0, 0, 0))
         screen.blit(txt, (btn.centerx - txt.get_width() // 2, btn.centery - txt.get_height() // 2))
+    else:
+        wait_txt = small_font.render("Warte auf Host...", True, (185, 185, 185))
+        screen.blit(wait_txt, (WIDTH - 260, HEIGHT - 80))
 
 # =========================
 # ASSETS & MAP INITIALISIERUNG
@@ -416,12 +457,74 @@ try:
     floor_img = pygame.image.load(os.path.join(base_path, "Floor.png")).convert_alpha()
     walls_img = pygame.image.load(os.path.join(base_path, "Walls.png")).convert_alpha()
     objects_img = pygame.image.load(os.path.join(base_path, "Objects.png")).convert_alpha()
+    lobby_bg = pygame.image.load(os.path.join(base_path, "Lobby.png")).convert_alpha()
 except Exception as e:
     print(f"Fehler beim Laden der Map-Bilder: {e}")
     pygame.quit()
     sys.exit()
     # Map laden
-lobby_bg = pygame.image.load("Assets/Map/Map/Lobby.png").convert()
+
+def load_lobby_map():
+    lobby_hitboxes = []
+    lobby_spawns = [None] * 15  # Platzhalter für bis zu 15 Spieler
+    fallback_spawns = []
+
+    try:
+        path = os.path.join("Assets", "Map", "Map", "Lobby.json")
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            
+        for layer in data.get("layers", []):
+            layer_name = layer.get("name")
+            layer_type = layer.get("type")
+            
+            if layer_type == "objectgroup":
+                # Hitboxen extrahieren
+                if layer_name in ["Hitboxes", "ObjectsHitbox"]:
+                    for obj in layer.get("objects", []):
+                        rect = pygame.Rect(
+                            obj.get("x", 0),
+                            obj.get("y", 0),
+                            obj.get("width", 0),
+                            obj.get("height", 0)
+                        )
+                        lobby_hitboxes.append(rect)
+                        
+                # Spawnpoints extrahieren
+                elif layer_name == "Spawnpoints":
+                    for obj in layer.get("objects", []):
+                        name = obj.get("name", "")
+                        x = obj.get("x", 0)
+                        y = obj.get("y", 0)
+                        fallback_spawns.append((x, y))
+                        
+                        # Versuchen, die Zahl aus "Spawn13" o.ä. zu parsen
+                        try:
+                            num = int(''.join(filter(str.isdigit, name)))
+                            # Umrechnung auf 0-basierten Index (Spawn1 -> Index 0)
+                            if 1 <= num <= 15:
+                                lobby_spawns[num - 1] = (x, y)
+                            elif 0 <= num < 15:
+                                lobby_spawns[num] = (x, y)
+                        except ValueError:
+                            pass
+    except Exception as e:
+        print(f"[FEHLER] Lobby.json konnte nicht geladen werden: {e}")
+
+    # Löcher in den Spawns mit Fallbacks auffüllen
+    final_spawns = []
+    for s in lobby_spawns:
+        if s is not None:
+            final_spawns.append(s)
+        elif fallback_spawns:
+            final_spawns.append(fallback_spawns[0])
+        else:
+            final_spawns.append((100, 100)) # Absoluter Fallback
+
+    return lobby_hitboxes, final_spawns
+
+lobby_hitboxes, lobby_spawnpoints = load_lobby_map()
+lobby_spawn_rects = [pygame.Rect(pos[0], pos[1], PLAYER_SIZE, PLAYER_SIZE) for pos in lobby_spawnpoints]
 
 MAP_WIDTH_PX, MAP_HEIGHT_PX = floor_img.get_size()
 MINIMAP_WIDTH = 800  
@@ -467,8 +570,7 @@ while running:
 
         elif state == "lobby":
             if event.type == pygame.MOUSEBUTTONDOWN and my_id == host_id:
-                # Klick-Erkennung an neues Layout angepasst
-                btn = pygame.Rect(WIDTH // 2 + 100, HEIGHT - 160, 180, 70)
+                btn = pygame.Rect(WIDTH - 240, HEIGHT - 100, 200, 60) # Koordinaten angepasst an draw_lobby()
                 if btn.collidepoint(event.pos):
                     try:
                         sock.sendall(struct.pack("!B", 99))
@@ -518,6 +620,14 @@ while running:
 
     if state == "game" and task_manager.active_task is None and not show_minimap and game_started:
         if my_player.move(pygame.key.get_pressed(), hitboxes):
+            try:
+                sock.sendall(struct.pack('!Bii', 2, int(my_player.rect.x), int(my_player.rect.y)))
+            except Exception as e:
+                print(f"Verbindung verloren: {e}")
+                running = False
+
+    elif state == "lobby" and not game_started and my_id is not None:
+        if my_player.move(pygame.key.get_pressed(), lobby_hitboxes):
             try:
                 sock.sendall(struct.pack('!Bii', 2, int(my_player.rect.x), int(my_player.rect.y)))
             except Exception as e:

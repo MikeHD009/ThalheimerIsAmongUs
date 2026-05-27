@@ -146,12 +146,12 @@
    <point/>
   </object>
  </objectgroup>
- <objectgroup id="21" name="Tasks" visible="0">
+ <objectgroup id="21" name="Tasks">
   <object id="470" name="Task0" x="95.6364" y="478" width="47.2727" height="25.2727"/>
   <object id="471" name="Task1" x="1368" y="232.25" width="41.75" height="54.5"/>
   <object id="472" name="Task2" x="936" y="608.875" width="42.375" height="39"/>
-  <object id="473" name="Task4" x="168" y="1321.82" width="70" height="45.6364"/>
-  <object id="474" name="Task3" x="575.875" y="1345.75" width="23" height="19.25"/>
+  <object id="473" name="Task4" x="576.083" y="1345.74" width="22.5" height="18.8864"/>
+  <object id="474" name="Task3" x="168.083" y="1322.08" width="70.25" height="45"/>
   <object id="475" name="Task5" x="477.333" y="1695.67" width="50.6667" height="28.6667"/>
   <object id="476" name="Task6" x="1272" y="697.5" width="22.75" height="19.25"/>
   <object id="477" name="Task7" x="432" y="1345.82" width="23.4545" height="19.2727"/>
