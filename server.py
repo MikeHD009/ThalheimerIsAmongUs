@@ -1,6 +1,7 @@
 import socket
 import threading
 import struct
+import random
 
 PORT = 5555
 MAX_PLAYERS = 15
@@ -11,6 +12,8 @@ player_names = {}
 
 host_id = 0
 player_id_counter = 0
+
+imposter_count = 1
 
 # =========================
 # LOBBY UPDATE
@@ -126,13 +129,35 @@ def handle_client(conn, player_id):
                         pass
 
             # =========================
+            # LOBBY EINSTELLUNGEN (NEU)
+            # =========================
+            elif packet == 11:
+                new_count = struct.unpack("!B", conn.recv(1))[0]
+                global imposter_count
+                imposter_count = max(1, min(new_count, 3)) # Maximal 3 Imposter
+                
+                # An alle Clients senden (Paket 12)
+                update_packet = struct.pack("!BB", 12, imposter_count)
+                broadcast_to_all(update_packet)
+
+            # =========================
             # GAMEPLAY START
             # =========================
             elif packet == 99:
                 print(f"[SERVER] Gameplay aktiviert von {player_id}")
+                
+                # Imposter zufällig bestimmen
+                # Wenn wir alleine testen (1 Spieler), gibt es 0 Imposter, ansonsten das Minimum aus gewünschten Impostern und (Spielerzahl - 1)
+                max_imps = max(1, min(imposter_count, len(clients) - 1)) if len(clients) > 1 else 0
+                imposter_ids = random.sample(list(clients.keys()), max_imps) if max_imps > 0 else []
 
                 for pid, c in list(clients.items()):
                     try:
+                        # 1 = Imposter, 0 = Crewmate
+                        role = 1 if pid in imposter_ids else 0
+                        # Paket 5: Rolle zuweisen
+                        c.sendall(struct.pack("!BB", 5, role))
+                        # Paket 3: Spiel starten
                         c.sendall(struct.pack("!B", 3))
                     except:
                         disconnect(pid)

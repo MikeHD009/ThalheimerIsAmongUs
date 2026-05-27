@@ -60,10 +60,16 @@ for i, color in enumerate(PLAYER_COLORS):
 # =========================
 # SPIELER KLASSE (Maptest-Logik)
 # =========================
+
+imposter_count = 1
+intro_timer = 0
+
 class Player:
     def __init__(self, x, y, image):
         self.rect = pygame.Rect(x, y, PLAYER_SIZE, PLAYER_SIZE)
         self.image = image
+        self.role = "Crewmate" 
+        self.role_desc = "Erledige alle Aufgaben und finde die Imposter."
 
     def move(self, keys, hitboxes):
         old_x = self.rect.x
@@ -256,6 +262,7 @@ def receive_data(sock):
             elif packet_type == 3:
                 game_started = True
                 state = "game"
+                intro_timer = 300
                 # Spieler auf die In-Game Map teleportieren
                 my_player.rect.x = spawnpoints[my_id].x
                 my_player.rect.y = spawnpoints[my_id].y
@@ -268,6 +275,18 @@ def receive_data(sock):
                 if len(disconnect_data) == 9:
                     p_id, x, y = struct.unpack("!Bii", disconnect_data)
                     if p_id in other_players: del other_players[p_id]
+
+            elif packet_type == 5: # NEU: Rollenvergabe
+                role_id = struct.unpack("!B", sock.recv(1))[0]
+                if role_id == 1:
+                    my_player.role = "Imposter"
+                    my_player.role_desc = "Eliminiere die Crew. Bleibe unentdeckt. (Sonderfähigkeiten folgen)"
+                else:
+                    my_player.role = "Crewmate"
+                    my_player.role_desc = "Erledige alle Aufgaben und finde die Imposter."
+
+            elif packet_type == 12: # NEU: Lobby-Einstellung wurde geändert
+                imposter_count = struct.unpack("!B", sock.recv(1))[0]
 
         except Exception as e:
             print("RECEIVE THREAD ERROR:", e)
@@ -439,12 +458,25 @@ def draw_lobby():
     count_txt = small_font.render(f"Spieler online: {len(player_names)} / 15", True, (255, 255, 255))
     screen.blit(count_txt, (40, HEIGHT - 80))
 
+    imp_text = small_font.render(f"Imposter: {imposter_count}", True, (255, 255, 255))
+    screen.blit(imp_text, (WIDTH // 2 - imp_text.get_width() // 2, HEIGHT - 150))
+
     # Host sieht den grünen Startbutton, Client sieht Wartetext
     if my_id == host_id:
         btn = pygame.Rect(WIDTH - 240, HEIGHT - 100, 200, 60)
         pygame.draw.rect(screen, (0, 220, 100), btn, border_radius=10)
         txt = small_font.render("START", True, (0, 0, 0))
         screen.blit(txt, (btn.centerx - txt.get_width() // 2, btn.centery - txt.get_height() // 2))
+
+        btn_minus = pygame.Rect(WIDTH // 2 - 100, HEIGHT - 155, 40, 40)
+        btn_plus = pygame.Rect(WIDTH // 2 + 60, HEIGHT - 155, 40, 40)
+        pygame.draw.rect(screen, (100, 100, 100), btn_minus, border_radius=5)
+        pygame.draw.rect(screen, (100, 100, 100), btn_plus, border_radius=5)
+        
+        minus_txt = small_font.render("-", True, (255, 255, 255))
+        plus_txt = small_font.render("+", True, (255, 255, 255))
+        screen.blit(minus_txt, (btn_minus.centerx - minus_txt.get_width() // 2, btn_minus.centery - minus_txt.get_height() // 2))
+        screen.blit(plus_txt, (btn_plus.centerx - plus_txt.get_width() // 2, btn_plus.centery - plus_txt.get_height() // 2))
     else:
         wait_txt = small_font.render("Warte auf Host...", True, (185, 185, 185))
         screen.blit(wait_txt, (WIDTH - 260, HEIGHT - 80))
@@ -571,10 +603,24 @@ while running:
         elif state == "lobby":
             if event.type == pygame.MOUSEBUTTONDOWN and my_id == host_id:
                 btn = pygame.Rect(WIDTH - 240, HEIGHT - 100, 200, 60) # Koordinaten angepasst an draw_lobby()
+                
+                # HIER DIE BEIDEN BUTTONS FÜR DEN EVENT-LOOP DEFINIEREN:
+                btn_minus = pygame.Rect(WIDTH // 2 - 100, HEIGHT - 155, 40, 40)
+                btn_plus = pygame.Rect(WIDTH // 2 + 60, HEIGHT - 155, 40, 40)
+                
                 if btn.collidepoint(event.pos):
                     try:
                         sock.sendall(struct.pack("!B", 99))
                     except: pass
+                # NEU: Imposter Anzahl verändern
+                elif btn_minus.collidepoint(event.pos):
+                    if imposter_count > 1:
+                        try: sock.sendall(struct.pack("!BB", 11, imposter_count - 1))
+                        except: pass
+                elif btn_plus.collidepoint(event.pos):
+                    if imposter_count < 3: # Begrenzung z.B. auf 3
+                        try: sock.sendall(struct.pack("!BB", 11, imposter_count + 1))
+                        except: pass
 
         elif state == "game":
             if event.type == pygame.KEYDOWN:
@@ -724,6 +770,26 @@ while running:
 
         task_manager.draw(screen)
         task_manager.update()
+
+        role_hud = small_font.render(f"Rolle: {my_player.role}", True, (255, 255, 255))
+        screen.blit(role_hud, (20, 20))
+
+        # NEU: Großes Intro-Overlay zu Spielbeginn
+        if intro_timer > 0:
+            intro_timer -= 1
+            
+            overlay = pygame.Surface((WIDTH, HEIGHT))
+            overlay.set_alpha(180) # Halbtransparent schwarz
+            overlay.fill((0, 0, 0))
+            screen.blit(overlay, (0, 0))
+            
+            # Farbe je nach Rolle
+            title_color = (255, 50, 50) if my_player.role == "Imposter" else (50, 200, 255)
+            role_text = menu_font.render(f"DU BIST: {my_player.role.upper()}", True, title_color)
+            desc_text = small_font.render(my_player.role_desc, True, (255, 255, 255))
+            
+            screen.blit(role_text, (WIDTH // 2 - role_text.get_width() // 2, HEIGHT // 2 - 60))
+            screen.blit(desc_text, (WIDTH // 2 - desc_text.get_width() // 2, HEIGHT // 2 + 10))
 
         # MINIMAP OVERLAY RENDERING
         if show_minimap and task_manager.active_task is None:
