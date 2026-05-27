@@ -420,6 +420,8 @@ except Exception as e:
     print(f"Fehler beim Laden der Map-Bilder: {e}")
     pygame.quit()
     sys.exit()
+    # Map laden
+lobby_bg = pygame.image.load("Assets/Map/Map/Lobby.png").convert()
 
 MAP_WIDTH_PX, MAP_HEIGHT_PX = floor_img.get_size()
 MINIMAP_WIDTH = 800  
