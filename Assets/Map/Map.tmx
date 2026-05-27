@@ -1,8 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <map version="1.10" tiledversion="1.12.1" orientation="orthogonal" renderorder="right-down" width="78" height="78" tilewidth="24" tileheight="24" infinite="0" nextlayerid="22" nextobjectid="497">
- <editorsettings>
-  <export target="Map/Hitboxes.json" format="json"/>
- </editorsettings>
  <tileset firstgid="1" source="../../../Python/Freizeit/ThalheimerIsAmongUs/Thalheimer-is-Among-Us/Thalheimer is Among us/Assets/Map/Kachelsätze/4 BigSet.tsx"/>
  <tileset firstgid="91" source="../../../Python/Freizeit/ThalheimerIsAmongUs/Thalheimer-is-Among-Us/Thalheimer is Among us/Assets/Map/Kachelsätze/jdt.tsx"/>
  <layer id="17" name="FloorsFloor" width="78" height="78">

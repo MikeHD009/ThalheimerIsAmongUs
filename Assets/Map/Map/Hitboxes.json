@@ -506,18 +506,6 @@
                  "y":608.875
                 }, 
                 {
-                 "height":19.25,
-                 "id":474,
-                 "name":"Task3",
-                 "opacity":1,
-                 "rotation":0,
-                 "type":"",
-                 "visible":true,
-                 "width":23,
-                 "x":575.875,
-                 "y":1345.75
-                },
-                {
                  "height":45.6364,
                  "id":473,
                  "name":"Task4",
@@ -528,7 +516,19 @@
                  "width":70,
                  "x":168,
                  "y":1321.82
-                },
+                }, 
+                {
+                 "height":19.25,
+                 "id":474,
+                 "name":"Task3",
+                 "opacity":1,
+                 "rotation":0,
+                 "type":"",
+                 "visible":true,
+                 "width":23,
+                 "x":575.875,
+                 "y":1345.75
+                }, 
                 {
                  "height":28.6667,
                  "id":475,
