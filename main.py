@@ -233,7 +233,7 @@ def setup_socket(s):
 
 def receive_data(sock):
     print("RECEIVE THREAD STARTED")
-    global other_players, player_names, player_count, host_id, game_started, state
+    global other_players, player_names, player_count, host_id, game_started, state, imposter_count, intro_timer
 
     while True:
         try:
@@ -394,6 +394,10 @@ def draw_task_buttons(surface, buttons, player_obj, camera_x, camera_y):
 # =========================
 menu_font = pygame.font.SysFont("arial", 40)
 small_font = pygame.font.SysFont("arial", 28)
+
+info_text1 = small_font.render(f"Bewegung: WASD", True, (255, 255, 255))
+info_text2 = small_font.render(f"Map öffnen/schließen: M", True, (255, 255, 255))
+info_text3 = small_font.render(f"Benutzen/Interagieren: E", True, (255, 255, 255))
 
 ip_input = TextInput(WIDTH // 2 - 175, HEIGHT // 2 - 100, 350, 60, small_font)
 name_input = TextInput(WIDTH // 2 - 175, HEIGHT // 2 + 20, 350, 60, small_font)
@@ -773,6 +777,9 @@ while running:
 
         role_hud = small_font.render(f"Rolle: {my_player.role}", True, (255, 255, 255))
         screen.blit(role_hud, (20, 20))
+        screen.blit(info_text1, (20, 80))
+        screen.blit(info_text2, (20, 110))
+        screen.blit(info_text3, (20, 140))
 
         # NEU: Großes Intro-Overlay zu Spielbeginn
         if intro_timer > 0:
