@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<tileset version="1.10" tiledversion="1.12.1" name="jdt" tilewidth="96" tileheight="57" tilecount="54" columns="0">
+<tileset version="1.10" tiledversion="1.11.2" name="jdt" tilewidth="96" tileheight="57" tilecount="70" columns="0">
  <grid orientation="orthogonal" width="1" height="1"/>
  <tile id="0">
   <image source="../Map Assets/Objects/Object (1).png" width="14" height="13"/>
@@ -162,5 +162,53 @@
  </tile>
  <tile id="64">
   <image source="../Map Assets/Objects/Garden/totem.png" width="24" height="24"/>
+ </tile>
+ <tile id="65">
+  <image source="../Map Assets/Objects/Object.png" width="4" height="3"/>
+ </tile>
+ <tile id="66">
+  <image source="../Map Assets/Objects/Object (43).png" width="3" height="3"/>
+ </tile>
+ <tile id="67">
+  <image source="../Map Assets/Objects/Object (44).png" width="3" height="3"/>
+ </tile>
+ <tile id="68">
+  <image source="../Map Assets/Objects/Object (45).png" width="7" height="10"/>
+ </tile>
+ <tile id="69">
+  <image source="../Map Assets/Objects/Object (46).png" width="7" height="10"/>
+ </tile>
+ <tile id="70">
+  <image source="../Map Assets/Objects/Object (47).png" width="6" height="9"/>
+ </tile>
+ <tile id="71">
+  <image source="../Map Assets/Objects/Object (48).png" width="64" height="22"/>
+ </tile>
+ <tile id="72">
+  <image source="../Map Assets/Objects/Object (49).png" width="22" height="22"/>
+ </tile>
+ <tile id="73">
+  <image source="../Map Assets/Objects/Object (50).png" width="13" height="12"/>
+ </tile>
+ <tile id="74">
+  <image source="../Map Assets/Objects/Object (51).png" width="11" height="20"/>
+ </tile>
+ <tile id="75">
+  <image source="../Map Assets/Objects/Object (52).png" width="4" height="8"/>
+ </tile>
+ <tile id="76">
+  <image source="../Map Assets/Objects/Object (53).png" width="18" height="12"/>
+ </tile>
+ <tile id="77">
+  <image source="../Map Assets/Objects/Object (54).png" width="19" height="11"/>
+ </tile>
+ <tile id="78">
+  <image source="../Map Assets/Objects/Object (55).png" width="20" height="11"/>
+ </tile>
+ <tile id="79">
+  <image source="../Map Assets/Objects/Object (56).png" width="7" height="8"/>
+ </tile>
+ <tile id="80">
+  <image source="../Map Assets/Objects/Object (57).png" width="7" height="8"/>
  </tile>
 </tileset>
