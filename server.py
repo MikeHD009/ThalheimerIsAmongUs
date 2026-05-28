@@ -186,7 +186,7 @@ def handle_client(conn, player_id):
                     win_packet = struct.pack("!BB", 22, len(active_imposters))
                     for imp_id in active_imposters:
                         win_packet += struct.pack("!B", imp_id)
-                    broadcast_to_all(struct.pack("!B", 22))
+                    broadcast_to_all(win_packet)
 
             # =========================
             # RÜCKKEHR ZUR LOBBY (Ganz NEU hinzufügen)
