@@ -218,6 +218,7 @@ player_count = 0
 host_id = 0
 game_started = False
 state = "menu"
+imposter_reveal_ids = []
 
 global_task_progress = 0
 global_task_max = 0
@@ -302,6 +303,28 @@ def receive_data(sock):
 
             elif packet_type == 21: 
                 global_task_progress, global_task_max = struct.unpack("!HH", sock.recv(4))
+
+            # NEU: Crew hat gewonnen & Imposter auslesen
+            elif packet_type == 22: 
+                global imposter_reveal_ids
+                num_imps = struct.unpack("!B", sock.recv(1))[0]
+                imposter_reveal_ids = []
+                for _ in range(num_imps):
+                    imp_id = struct.unpack("!B", sock.recv(1))[0]
+                    imposter_reveal_ids.append(imp_id)
+                state = "crew_win"
+
+            # NEU: Signal zur Lobby-Rückkehr empfangen
+            elif packet_type == 23:
+                game_started = False
+                state = "lobby"
+                my_player.my_completed_tasks.clear()
+                # Spieler wieder auf Lobby-Spawnplatz setzen
+                my_player.rect.x = lobby_spawn_rects[my_id % len(lobby_spawn_rects)].x
+                my_player.rect.y = lobby_spawn_rects[my_id % len(lobby_spawn_rects)].y
+                # Neue Position an Server melden
+                try: sock.sendall(struct.pack('!Bii', 2, int(my_player.rect.x), int(my_player.rect.y)))
+                except: pass
                 
             # NEU: Crew hat gewonnen
             elif packet_type == 22: 
@@ -724,12 +747,18 @@ while running:
                 print(f"Verbindung verloren: {e}")
                 running = False
 
+    elif state == "crew_win":
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_RETURN:
+                if my_id == host_id:
+                    try: sock.sendall(struct.pack("!B", 23)) # Sende Rückkehr-Befehl
+                    except: pass
+
     # --- RENDERING ---
     if state == "menu":
         draw_menu()
     elif state == "lobby" and not game_started:
         draw_lobby()
-    elif game_started:
+    elif state == "game":
         camera_x = my_player.rect.x - (INTERNAL_SIZE // 2) + (PLAYER_SIZE // 2)
         camera_y = my_player.rect.y - (INTERNAL_SIZE // 2) + (PLAYER_SIZE // 2)
 
@@ -892,15 +921,24 @@ while running:
             pygame.draw.circle(screen, (255, 30, 30), (player_mm_x, player_mm_y), 8)
             pygame.draw.circle(screen, (255, 255, 255), (player_mm_x, player_mm_y), 8, 2)
 
-    # GANZ NEU: Der Siegesscreen
     elif state == "crew_win":
         screen.fill((20, 25, 30))
         win_title = menu_font.render("CREWMATES GEWINNEN!", True, (0, 255, 150))
         win_sub = small_font.render("Alle Aufgaben wurden erledigt.", True, (255, 255, 255))
-        screen.blit(win_title, (WIDTH // 2 - win_title.get_width() // 2, HEIGHT // 2 - 50))
-        screen.blit(win_sub, (WIDTH // 2 - win_sub.get_width() // 2, HEIGHT // 2 + 20))
-
-    pygame.display.update()
+        screen.blit(win_title, (WIDTH // 2 - win_title.get_width() // 2, HEIGHT // 2 - 100))
+        screen.blit(win_sub, (WIDTH // 2 - win_sub.get_width() // 2, HEIGHT // 2 - 40))
+        
+        # Imposter-Namen auflösen
+        imp_names = [player_names.get(i_id, f"Spieler {i_id}") for i_id in imposter_reveal_ids]
+        imp_text = small_font.render(f"Imposter war(en): {', '.join(imp_names)}", True, (255, 50, 50))
+        screen.blit(imp_text, (WIDTH // 2 - imp_text.get_width() // 2, HEIGHT // 2 + 20))
+        
+        # Interaktions-Hinweis zur Lobby-Rückkehr
+        if my_id == host_id:
+            back_txt = small_font.render("Drücke ENTER, um alle in die Lobby zurückzuholen", True, (255, 255, 255))
+        else:
+            back_txt = small_font.render("Warte auf den Host für Lobby-Rückkehr...", True, (150, 150, 150))
+        screen.blit(back_txt, (WIDTH // 2 - back_txt.get_width() // 2, HEIGHT // 2 + 100))
 
     pygame.display.update()
 

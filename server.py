@@ -14,6 +14,7 @@ host_id = 0
 player_id_counter = 0
 
 imposter_count = 1
+active_imposters = []
 
 total_crew_tasks = 0
 completed_crew_tasks = 0
@@ -153,6 +154,7 @@ def handle_client(conn, player_id):
                 # Wenn wir alleine testen (1 Spieler), gibt es 0 Imposter, ansonsten das Minimum aus gewünschten Impostern und (Spielerzahl - 1)
                 max_imps = max(1, min(imposter_count, len(clients) - 1)) if len(clients) > 1 else 0
                 imposter_ids = random.sample(list(clients.keys()), max_imps) if max_imps > 0 else []
+                active_imposters = imposter_ids
 
                 # NEU: Jedes Crewmitglied bekommt 10 Tasks
                 total_crew_tasks = max(1, (len(clients) - max_imps) * 10)
@@ -181,7 +183,18 @@ def handle_client(conn, player_id):
                 
                 # Wenn alle Tasks fertig sind -> Crew gewinnt (Paket 22)
                 if completed_crew_tasks >= total_crew_tasks:
+                    win_packet = struct.pack("!BB", 22, len(active_imposters))
+                    for imp_id in active_imposters:
+                        win_packet += struct.pack("!B", imp_id)
                     broadcast_to_all(struct.pack("!B", 22))
+
+            # =========================
+            # RÜCKKEHR ZUR LOBBY (Ganz NEU hinzufügen)
+            # =========================
+            elif packet == 23:
+                if player_id == host_id:
+                    # Befehl an alle Clients senden, in die Lobby zurückzukehren
+                    broadcast_to_all(struct.pack("!B", 23))
 
             # =========================
             # POSITION UPDATE
