@@ -15,6 +15,9 @@ player_id_counter = 0
 
 imposter_count = 1
 
+total_crew_tasks = 0
+completed_crew_tasks = 0
+
 # =========================
 # LOBBY UPDATE
 # =========================
@@ -99,7 +102,7 @@ def disconnect(player_id):
 # CLIENT THREAD
 # =========================
 def handle_client(conn, player_id):
-    global host_id
+    global host_id, total_crew_tasks, completed_crew_tasks
 
     print(f"[SERVER] Thread gestartet für Player {player_id}")
 
@@ -151,6 +154,10 @@ def handle_client(conn, player_id):
                 max_imps = max(1, min(imposter_count, len(clients) - 1)) if len(clients) > 1 else 0
                 imposter_ids = random.sample(list(clients.keys()), max_imps) if max_imps > 0 else []
 
+                # NEU: Jedes Crewmitglied bekommt 10 Tasks
+                total_crew_tasks = max(1, (len(clients) - max_imps) * 10)
+                completed_crew_tasks = 0
+
                 for pid, c in list(clients.items()):
                     try:
                         # 1 = Imposter, 0 = Crewmate
@@ -161,6 +168,20 @@ def handle_client(conn, player_id):
                         c.sendall(struct.pack("!B", 3))
                     except:
                         disconnect(pid)
+
+            # =========================
+            # TASK UPDATE & WIN CHECK
+            # =========================
+            elif packet == 20: # Task wurde gelöst
+                completed_crew_tasks += 1
+                
+                # Paket 21: Sende neuen Fortschritt an alle
+                update_packet = struct.pack("!BHH", 21, completed_crew_tasks, total_crew_tasks)
+                broadcast_to_all(update_packet)
+                
+                # Wenn alle Tasks fertig sind -> Crew gewinnt (Paket 22)
+                if completed_crew_tasks >= total_crew_tasks:
+                    broadcast_to_all(struct.pack("!B", 22))
 
             # =========================
             # POSITION UPDATE

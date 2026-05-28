@@ -70,6 +70,8 @@ class Player:
         self.image = image
         self.role = "Crewmate" 
         self.role_desc = "Erledige alle Aufgaben und finde die Imposter."
+        self.my_assigned_tasks = []
+        self.my_completed_tasks = []
 
     def move(self, keys, hitboxes):
         old_x = self.rect.x
@@ -276,17 +278,31 @@ def receive_data(sock):
                     p_id, x, y = struct.unpack("!Bii", disconnect_data)
                     if p_id in other_players: del other_players[p_id]
 
-            elif packet_type == 5: # NEU: Rollenvergabe
+            elif packet_type == 5: # Rollenvergabe
                 role_id = struct.unpack("!B", sock.recv(1))[0]
                 if role_id == 1:
                     my_player.role = "Imposter"
-                    my_player.role_desc = "Eliminiere die Crew. Bleibe unentdeckt. (Sonderfähigkeiten folgen)"
+                    my_player.role_desc = "Eliminiere die Crew. Bleibe unentdeckt."
+                    my_player.my_assigned_tasks = [] # GEÄNDERT
                 else:
                     my_player.role = "Crewmate"
                     my_player.role_desc = "Erledige alle Aufgaben und finde die Imposter."
+                    
+                    # GEÄNDERT: 10 zufällige Tasks zuweisen
+                    available_indices = list(range(len(TASK_TEMPLATES)))
+                    import random
+                    my_player.my_assigned_tasks = random.sample(available_indices, min(10, len(available_indices)))
+                    my_player.my_completed_tasks = [] # GEÄNDERT
 
             elif packet_type == 12: # NEU: Lobby-Einstellung wurde geändert
                 imposter_count = struct.unpack("!B", sock.recv(1))[0]
+
+            elif packet_type == 21: 
+                global_task_progress, global_task_max = struct.unpack("!HH", sock.recv(4))
+                
+            # NEU: Crew hat gewonnen
+            elif packet_type == 22: 
+                state = "crew_win"
 
         except Exception as e:
             print("RECEIVE THREAD ERROR:", e)
@@ -370,6 +386,12 @@ task_buttons = []
 
 def draw_task_buttons(surface, buttons, player_obj, camera_x, camera_y):
     for btn in buttons:
+        t_idx = btn["task_index"]
+        
+        # GEÄNDERT: Nutze player_obj.my_assigned_tasks
+        if player_obj.role == "Crewmate" and t_idx not in player_obj.my_assigned_tasks:
+            continue
+
         r = btn["rect"]
         player_center = player_obj.rect.center
         button_center = r.center
@@ -380,14 +402,15 @@ def draw_task_buttons(surface, buttons, player_obj, camera_x, camera_y):
         dr.y -= camera_y
         dr_center = dr.center
         
-        pygame.draw.rect(surface, (0, 255, 255), dr, 2, border_radius=4)
+        # GEÄNDERT: Nutze player_obj.my_completed_tasks
+        color = (0, 255, 0) if t_idx in player_obj.my_completed_tasks else (0, 255, 255)
+        pygame.draw.rect(surface, color, dr, 2, border_radius=4)
         
         if distance < 30:
-            lbl_text = proximity_font.render(f"[E] {btn['name']}", True, (255, 255, 255))
-            lbl_bg = pygame.Rect(dr_center[0] - lbl_text.get_width() // 2 - 6, dr.y - 32, lbl_text.get_width() + 10, lbl_text.get_height() + 5)
-            pygame.draw.rect(surface, (20, 20, 20), lbl_bg, border_radius=4)
-            pygame.draw.rect(surface, (0, 220, 100), lbl_bg, width=1, border_radius=4)
-            surface.blit(lbl_text, (dr_center[0] - lbl_text.get_width() // 2, dr.y - 30))
+            if t_idx in player_obj.my_completed_tasks:
+                lbl_text = proximity_font.render(f"[ERLEDIGT] {btn['name']}", True, (150, 150, 150))
+            else:
+                lbl_text = proximity_font.render(f"[E] {btn['name']}", True, (255, 255, 255))
 
 # =========================
 # LOBBY MENÜ DRAWING (Dynamisch zentriert für Vollbild)
@@ -591,6 +614,8 @@ show_minimap = False
 while running:
     dt = clock.tick(60) / 1000.0
 
+    was_task_active = task_manager.active_task is not None
+
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
@@ -630,6 +655,7 @@ while running:
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_q:
                     if task_manager.active_task:
+                        task_aborted = True # NEU: Markieren als manuell abgebrochen
                         task_manager.reset_active_task()
                         task_manager.active_task = None
                     elif show_minimap:
@@ -644,10 +670,21 @@ while running:
 
                 if event.key == pygame.K_e and task_manager.active_task is None and not show_minimap:
                     for btn in task_buttons:
+                        t_idx = btn["task_index"]
+                        # GEÄNDERT:
+                        if my_player.role == "Crewmate" and t_idx not in my_player.my_assigned_tasks:
+                            continue
+
                         distance = math.hypot(my_player.rect.centerx - btn["rect"].centerx, my_player.rect.centery - btn["rect"].centery)
                         if distance < 50:
-                            if task_manager.start_task(btn["task_index"]) == "ALREADY_DONE":
+                            if t_idx in my_player.my_completed_tasks: # GEÄNDERT
                                 already_done_timer = 90
+                            else:
+                                if task_manager.start_task(t_idx) == "ALREADY_DONE":
+                                    already_done_timer = 90
+                                else:
+                                    active_task_idx = t_idx
+                                    task_aborted = False 
                             break
                 
                 if event.key == pygame.K_SPACE and not show_minimap:
@@ -775,6 +812,32 @@ while running:
         task_manager.draw(screen)
         task_manager.update()
 
+        is_task_active = task_manager.active_task is not None
+        if was_task_active and not is_task_active:
+            if not task_aborted and active_task_idx != -1:
+                if active_task_idx not in my_player.my_completed_tasks: # GEÄNDERT
+                    my_player.my_completed_tasks.append(active_task_idx) # GEÄNDERT
+                    try:
+                        sock.sendall(struct.pack("!B", 20)) 
+                    except: pass
+            active_task_idx = -1
+            task_aborted = False
+
+        bar_width = 300
+        bar_height = 20
+        bar_x = 20
+        bar_y = 170
+        pygame.draw.rect(screen, (40, 40, 40), (bar_x, bar_y, bar_width, bar_height), border_radius=10)
+        
+        if global_task_max > 0:
+            fill_width = int(bar_width * (global_task_progress / global_task_max))
+            if fill_width > 0:
+                pygame.draw.rect(screen, (0, 220, 100), (bar_x, bar_y, fill_width, bar_height), border_radius=10)
+        pygame.draw.rect(screen, (255, 255, 255), (bar_x, bar_y, bar_width, bar_height), 2, border_radius=10)
+        
+        prog_txt = proximity_font.render(f"Gesamt-Fortschritt ({global_task_progress}/{global_task_max})", True, (255, 255, 255))
+        screen.blit(prog_txt, (bar_x + bar_width//2 - prog_txt.get_width()//2, bar_y + 3))
+
         role_hud = small_font.render(f"Rolle: {my_player.role}", True, (255, 255, 255))
         screen.blit(role_hud, (20, 20))
         screen.blit(info_text1, (20, 80))
@@ -807,11 +870,34 @@ while running:
             screen.blit(minimap_bg, (mm_x, mm_y))
             pygame.draw.rect(screen, (240, 240, 240), (mm_x, mm_y, MINIMAP_WIDTH, MINIMAP_HEIGHT), 2, border_radius=4)
 
+            # NEU: Zeige die Tasks auf der Minimap
+            if my_player.role == "Crewmate":
+                for btn in task_buttons:
+                    t_idx = btn["task_index"]
+                    if t_idx in my_player.my_assigned_tasks: # GEÄNDERT
+                        t_x = mm_x + int((btn["rect"].centerx / MAP_WIDTH_PX) * MINIMAP_WIDTH)
+                        t_y = mm_y + int((btn["rect"].centery / MAP_HEIGHT_PX) * MINIMAP_HEIGHT)
+
+                        t_col = (0, 255, 0) if t_idx in my_player.my_completed_tasks else (255, 255, 0) # GEÄNDERT
+                        pygame.draw.circle(screen, t_col, (t_x, t_y), 6)
+                        pygame.draw.circle(screen, (0, 0, 0), (t_x, t_y), 6, 1)
+
+            # Eigener Spieler (Rot)
             player_mm_x = mm_x + int((my_player.rect.centerx / MAP_WIDTH_PX) * MINIMAP_WIDTH)
             player_mm_y = mm_y + int((my_player.rect.centery / MAP_HEIGHT_PX) * MINIMAP_HEIGHT)
 
             pygame.draw.circle(screen, (255, 30, 30), (player_mm_x, player_mm_y), 8)
             pygame.draw.circle(screen, (255, 255, 255), (player_mm_x, player_mm_y), 8, 2)
+
+    # GANZ NEU: Der Siegesscreen
+    elif state == "crew_win":
+        screen.fill((20, 25, 30))
+        win_title = menu_font.render("CREWMATES GEWINNEN!", True, (0, 255, 150))
+        win_sub = small_font.render("Alle Aufgaben wurden erledigt.", True, (255, 255, 255))
+        screen.blit(win_title, (WIDTH // 2 - win_title.get_width() // 2, HEIGHT // 2 - 50))
+        screen.blit(win_sub, (WIDTH // 2 - win_sub.get_width() // 2, HEIGHT // 2 + 20))
+
+    pygame.display.update()
 
     pygame.display.update()
 
