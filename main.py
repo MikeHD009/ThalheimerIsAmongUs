@@ -219,6 +219,9 @@ host_id = 0
 game_started = False
 state = "menu"
 
+global_task_progress = 0
+global_task_max = 0
+
 def has_line_of_sight(p1, p2, hitboxes):
     min_x, max_x = min(p1[0], p2[0]), max(p1[0], p2[0])
     min_y, max_y = min(p1[1], p2[1]), max(p1[1], p2[1])
@@ -235,7 +238,7 @@ def setup_socket(s):
 
 def receive_data(sock):
     print("RECEIVE THREAD STARTED")
-    global other_players, player_names, player_count, host_id, game_started, state, imposter_count, intro_timer
+    global other_players, player_names, player_count, host_id, game_started, state, imposter_count, intro_timer, global_task_progress, global_task_max
 
     while True:
         try:
