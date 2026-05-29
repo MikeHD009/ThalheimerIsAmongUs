@@ -32,22 +32,20 @@ HEIGHT = screen.get_height()
 pygame.display.set_caption("Thalheimer is Among Us")
 clock = pygame.time.Clock()
 
-# Internal Surface für die pixelgenaue Map-Skalierung
 internal_surface = pygame.Surface((INTERNAL_SIZE, INTERNAL_SIZE))
 
-# Sichtmaske (Fog of War) initialisieren
 fog_overlay = pygame.Surface((INTERNAL_SIZE, INTERNAL_SIZE))
 fog_overlay.fill((0, 0, 0))
-# Schneidet einen sichtbaren Kreis in der Mitte aus
 pygame.draw.circle(fog_overlay, (255, 255, 255), (INTERNAL_SIZE // 2, INTERNAL_SIZE // 2), VISION_RADIUS)
 fog_overlay.set_colorkey((255, 255, 255))
 
 # =========================
 # BILDER LADEN & SKALIEREN
 # =========================
-PLAYER_SIZE = int(TILE_SIZE * 0.6)  # Spielergröße an Tiled-Map anpassen
+PLAYER_SIZE = int(TILE_SIZE * 0.6)
 PLAYER_COLORS = ["lime", "banana", "red", "blue", "green", "orange", "yellow", "black", "white", "purple", "brown", "cyan", "maroon", "rose", "coral"]
 player_images = {}
+player_dead_images = {}
 
 for i, color in enumerate(PLAYER_COLORS):
     try:
@@ -56,11 +54,20 @@ for i, color in enumerate(PLAYER_COLORS):
     except:
         img = pygame.image.load("Assets/Character/All_colors/lime.png").convert_alpha()
         player_images[i] = pygame.transform.scale(img, (PLAYER_SIZE, PLAYER_SIZE))
+        
+    # Versuche _dead Bild zu laden, ansonsten rötlicher Fallback
+    try:
+        dead_img = pygame.image.load(f"Assets/Character/All_colors/{color}'s_dead_body.png").convert_alpha()
+        player_dead_images[i] = pygame.transform.scale(dead_img, (int(PLAYER_SIZE*1.3), int(PLAYER_SIZE*0.765*1.3)))
+    except Exception as e:
+        print(e)
+        fallback_dead = player_images[i].copy()
+        fallback_dead.fill((255, 100, 100, 180), special_flags=pygame.BLEND_RGBA_MULT)
+        player_dead_images[i] = fallback_dead
 
 # =========================
-# SPIELER KLASSE (Maptest-Logik)
+# SPIELER KLASSE
 # =========================
-
 imposter_count = 1
 intro_timer = 0
 
@@ -72,34 +79,39 @@ class Player:
         self.role_desc = "Erledige alle Aufgaben und finde die Imposter."
         self.my_assigned_tasks = []
         self.my_completed_tasks = []
+        self.is_dead = False # NEU: Tod-Status
 
     def move(self, keys, hitboxes):
         old_x = self.rect.x
         old_y = self.rect.y
         dx, dy = 0, 0
 
-        if keys[pygame.K_w] or keys[pygame.K_UP]:    dy -= PLAYER_SPEED
-        if keys[pygame.K_s] or keys[pygame.K_DOWN]:  dy += PLAYER_SPEED
-        if keys[pygame.K_a] or keys[pygame.K_LEFT]:  dx -= PLAYER_SPEED
-        if keys[pygame.K_d] or keys[pygame.K_RIGHT]: dx += PLAYER_SPEED
+        # NEU: Geister sind langsamer (0.8x)
+        current_speed = PLAYER_SPEED * 0.8 if self.is_dead else PLAYER_SPEED
+
+        if keys[pygame.K_w] or keys[pygame.K_UP]:    dy -= current_speed
+        if keys[pygame.K_s] or keys[pygame.K_DOWN]:  dy += current_speed
+        if keys[pygame.K_a] or keys[pygame.K_LEFT]:  dx -= current_speed
+        if keys[pygame.K_d] or keys[pygame.K_RIGHT]: dx += current_speed
 
         if dx != 0 and dy != 0:
             dx *= 0.7071
             dy *= 0.7071
 
-        # X-Achse bewegen und prüfen
         self.rect.x += int(dx)
-        for box in hitboxes:
-            if self.rect.colliderect(box):
-                if dx > 0: self.rect.right = box.left
-                if dx < 0: self.rect.left = box.right
+        # NEU: Geister gehen durch Wände
+        if not self.is_dead:
+            for box in hitboxes:
+                if self.rect.colliderect(box):
+                    if dx > 0: self.rect.right = box.left
+                    if dx < 0: self.rect.left = box.right
 
-        # Y-Achse bewegen und prüfen
         self.rect.y += int(dy)
-        for box in hitboxes:
-            if self.rect.colliderect(box):
-                if dy > 0: self.rect.bottom = box.top
-                if dy < 0: self.rect.top = box.bottom
+        if not self.is_dead:
+            for box in hitboxes:
+                if self.rect.colliderect(box):
+                    if dy > 0: self.rect.bottom = box.top
+                    if dy < 0: self.rect.top = box.bottom
 
         return self.rect.x != old_x or self.rect.y != old_y
 
@@ -107,7 +119,12 @@ class Player:
         draw_rect = self.rect.copy()
         draw_rect.x -= camera_x
         draw_rect.y -= camera_y
-        surface.blit(self.image, (draw_rect.x, draw_rect.y))
+        
+        img_to_draw = self.image.copy()
+        if self.is_dead:
+            img_to_draw.set_alpha(128) # Eigener Geist ist leicht transparent
+            
+        surface.blit(img_to_draw, (draw_rect.x, draw_rect.y))
 
 class TextInput:
     def __init__(self, x, y, w, h, font):
@@ -138,7 +155,6 @@ class TextInput:
 def load_hitboxes(filepath):
     hitboxes, vents, plants, tasks_hitboxes, mapwalls, spawnpoints = [], [], [], [], [], []
     if not os.path.exists(filepath):
-        print(f"WARNUNG: Hitbox-Datei nicht gefunden: {filepath}")
         return hitboxes, vents, plants, tasks_hitboxes, mapwalls, spawnpoints
     
     with open(filepath, "r", encoding="utf-8-sig") as f:
@@ -149,52 +165,40 @@ def load_hitboxes(filepath):
         name = layer.get("name")
         if name in ["Hitbox", "ObjectsHitbox"]:
             if "objects" in layer:
-                for obj in layer["objects"]:
-                    hitboxes.append(pygame.Rect(obj["x"], obj["y"], obj["width"], obj["height"]))
+                for obj in layer["objects"]: hitboxes.append(pygame.Rect(obj["x"], obj["y"], obj["width"], obj["height"]))
             elif "data" in layer:
-                for i, tile_id in enumerate(layer["data"]):
-                    if tile_id != 0:
-                        hitboxes.append(pygame.Rect((i % map_width) * TILE_SIZE, (i // map_width) * TILE_SIZE, TILE_SIZE, TILE_SIZE))
+                for i, t_id in enumerate(layer["data"]):
+                    if t_id != 0: hitboxes.append(pygame.Rect((i % map_width) * TILE_SIZE, (i // map_width) * TILE_SIZE, TILE_SIZE, TILE_SIZE))
         elif name == "VentsHitbox":
             if "objects" in layer:
-                for obj in layer["objects"]:
-                    vents.append(pygame.Rect(obj["x"], obj["y"], obj["width"], obj["height"]))
+                for obj in layer["objects"]: vents.append(pygame.Rect(obj["x"], obj["y"], obj["width"], obj["height"]))
             elif "data" in layer:
-                for i, tile_id in enumerate(layer["data"]):
-                    if tile_id != 0:
-                        vents.append(pygame.Rect((i % map_width) * TILE_SIZE, (i // map_width) * TILE_SIZE, TILE_SIZE, TILE_SIZE))
+                for i, t_id in enumerate(layer["data"]):
+                    if t_id != 0: vents.append(pygame.Rect((i % map_width) * TILE_SIZE, (i // map_width) * TILE_SIZE, TILE_SIZE, TILE_SIZE))
         elif name == "PlantTeleport":
             if "objects" in layer:
-                for obj in layer["objects"]:
-                    plants.append(pygame.Rect(obj["x"], obj["y"], obj["width"], obj["height"]))
+                for obj in layer["objects"]: plants.append(pygame.Rect(obj["x"], obj["y"], obj["width"], obj["height"]))
             elif "data" in layer:
-                for i, tile_id in enumerate(layer["data"]):
-                    if tile_id != 0:
-                        plants.append(pygame.Rect((i % map_width) * TILE_SIZE, (i // map_width) * TILE_SIZE, TILE_SIZE, TILE_SIZE))
+                for i, t_id in enumerate(layer["data"]):
+                    if t_id != 0: plants.append(pygame.Rect((i % map_width) * TILE_SIZE, (i // map_width) * TILE_SIZE, TILE_SIZE, TILE_SIZE))
         elif name in ["Tasks", "Tasks"]:
             if "objects" in layer:
-                for obj in layer["objects"]:
-                    tasks_hitboxes.append(pygame.Rect(obj["x"], obj["y"], obj["width"], obj["height"]))
+                for obj in layer["objects"]: tasks_hitboxes.append(pygame.Rect(obj["x"], obj["y"], obj["width"], obj["height"]))
             elif "data" in layer:
-                for i, tile_id in enumerate(layer["data"]):
-                    if tile_id != 0:
-                        tasks_hitboxes.append(pygame.Rect((i % map_width) * TILE_SIZE, (i // map_width) * TILE_SIZE, TILE_SIZE, TILE_SIZE))
+                for i, t_id in enumerate(layer["data"]):
+                    if t_id != 0: tasks_hitboxes.append(pygame.Rect((i % map_width) * TILE_SIZE, (i // map_width) * TILE_SIZE, TILE_SIZE, TILE_SIZE))
         if name in ["Hitbox", "Hitbox"]:
             if "objects" in layer:
-                for obj in layer["objects"]:
-                    mapwalls.append(pygame.Rect(obj["x"], obj["y"], obj["width"], obj["height"]))
+                for obj in layer["objects"]: mapwalls.append(pygame.Rect(obj["x"], obj["y"], obj["width"], obj["height"]))
             elif "data" in layer:
-                for i, tile_id in enumerate(layer["data"]):
-                    if tile_id != 0:
-                        mapwalls.append(pygame.Rect((i % map_width) * TILE_SIZE, (i // map_width) * TILE_SIZE, TILE_SIZE, TILE_SIZE))
+                for i, t_id in enumerate(layer["data"]):
+                    if t_id != 0: mapwalls.append(pygame.Rect((i % map_width) * TILE_SIZE, (i // map_width) * TILE_SIZE, TILE_SIZE, TILE_SIZE))
         if name in ["Spawnpoints", "Spawnpoints"]:
             if "objects" in layer:
-                for obj in layer["objects"]:
-                    spawnpoints.append(pygame.Rect(obj["x"], obj["y"], obj["width"], obj["height"]))
+                for obj in layer["objects"]: spawnpoints.append(pygame.Rect(obj["x"], obj["y"], obj["width"], obj["height"]))
             elif "data" in layer:
-                for i, tile_id in enumerate(layer["data"]):
-                    if tile_id != 0:
-                        spawnpoints.append(pygame.Rect((i % map_width) * TILE_SIZE, (i // map_width) * TILE_SIZE, TILE_SIZE, TILE_SIZE))
+                for i, t_id in enumerate(layer["data"]):
+                    if t_id != 0: spawnpoints.append(pygame.Rect((i % map_width) * TILE_SIZE, (i // map_width) * TILE_SIZE, TILE_SIZE, TILE_SIZE))
                         
     return hitboxes, vents, plants, tasks_hitboxes, mapwalls, spawnpoints
 
@@ -212,8 +216,11 @@ def get_current_plant(player, plants):
 # NETZWERK LOGIK
 # =========================
 other_players = {}
-my_id = None
 player_names = {}
+dead_players = set()     # NEU: Set für tote Spieler
+dead_bodies = {}         # NEU: dict(p_id = (x, y)) für die Leichen
+
+my_id = None
 player_count = 0
 host_id = 0
 game_started = False
@@ -227,19 +234,17 @@ def has_line_of_sight(p1, p2, hitboxes):
     min_x, max_x = min(p1[0], p2[0]), max(p1[0], p2[0])
     min_y, max_y = min(p1[1], p2[1]), max(p1[1], p2[1])
     line_rect = pygame.Rect(min_x, min_y, (max_x - min_x) or 1, (max_y - min_y) or 1)
-    
     for box in hitboxes:
-        if line_rect.colliderect(box):
-            if box.clipline(p1, p2):
-                return False
+        if line_rect.colliderect(box) and box.clipline(p1, p2):
+            return False
     return True
 
 def setup_socket(s):
     s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
 
 def receive_data(sock):
-    print("RECEIVE THREAD STARTED")
-    global other_players, player_names, player_count, host_id, game_started, state, imposter_count, intro_timer, global_task_progress, global_task_max
+    global other_players, player_names, player_count, host_id, game_started, state
+    global imposter_count, intro_timer, global_task_progress, global_task_max, dead_players, dead_bodies
 
     while True:
         try:
@@ -269,11 +274,9 @@ def receive_data(sock):
                 game_started = True
                 state = "game"
                 intro_timer = 300
-                # Spieler auf die In-Game Map teleportieren
                 my_player.rect.x = spawnpoints[my_id].x
                 my_player.rect.y = spawnpoints[my_id].y
-                try:
-                    sock.sendall(struct.pack('!Bii', 2, int(my_player.rect.x), int(my_player.rect.y)))
+                try: sock.sendall(struct.pack('!Bii', 2, int(my_player.rect.x), int(my_player.rect.y)))
                 except: pass
 
             elif packet_type == 4:
@@ -282,53 +285,69 @@ def receive_data(sock):
                     p_id, x, y = struct.unpack("!Bii", disconnect_data)
                     if p_id in other_players: del other_players[p_id]
 
-            elif packet_type == 5: # Rollenvergabe
+            elif packet_type == 5:
                 role_id = struct.unpack("!B", sock.recv(1))[0]
                 if role_id == 1:
                     my_player.role = "Imposter"
                     my_player.role_desc = "Eliminiere die Crew. Bleibe unentdeckt."
-                    my_player.my_assigned_tasks = [] # GEÄNDERT
+                    my_player.my_assigned_tasks = [] 
                 else:
                     my_player.role = "Crewmate"
                     my_player.role_desc = "Erledige alle Aufgaben und finde die Imposter."
-                    
-                    # GEÄNDERT: 10 zufällige Tasks zuweisen
                     available_indices = list(range(len(TASK_TEMPLATES)))
                     import random
                     my_player.my_assigned_tasks = random.sample(available_indices, min(10, len(available_indices)))
-                    my_player.my_completed_tasks = [] # GEÄNDERT
+                    my_player.my_completed_tasks = []
 
-            elif packet_type == 12: # NEU: Lobby-Einstellung wurde geändert
+            elif packet_type == 12: 
                 imposter_count = struct.unpack("!B", sock.recv(1))[0]
 
             elif packet_type == 21: 
                 global_task_progress, global_task_max = struct.unpack("!HH", sock.recv(4))
 
-            # NEU: Crew hat gewonnen & Imposter auslesen
             elif packet_type == 22: 
                 global imposter_reveal_ids
                 num_imps = struct.unpack("!B", sock.recv(1))[0]
                 imposter_reveal_ids = []
                 for _ in range(num_imps):
-                    imp_id = struct.unpack("!B", sock.recv(1))[0]
-                    imposter_reveal_ids.append(imp_id)
+                    imposter_reveal_ids.append(struct.unpack("!B", sock.recv(1))[0])
                 state = "crew_win"
 
-            # NEU: Signal zur Lobby-Rückkehr empfangen
             elif packet_type == 23:
                 game_started = False
                 state = "lobby"
                 my_player.my_completed_tasks.clear()
-                # Spieler wieder auf Lobby-Spawnplatz setzen
+                
+                # NEU: Zugewiesene Aufgaben und globalen Fortschritt zurücksetzen
+                my_player.my_assigned_tasks.clear()
+                global_task_progress = 0
+                global_task_max = 0
+                
+                my_player.is_dead = False # Reset Tod
+                dead_players.clear()
+                dead_bodies.clear()
                 my_player.rect.x = lobby_spawn_rects[my_id % len(lobby_spawn_rects)].x
                 my_player.rect.y = lobby_spawn_rects[my_id % len(lobby_spawn_rects)].y
-                # Neue Position an Server melden
                 try: sock.sendall(struct.pack('!Bii', 2, int(my_player.rect.x), int(my_player.rect.y)))
                 except: pass
                 
-            # NEU: Crew hat gewonnen
-            elif packet_type == 22: 
-                state = "crew_win"
+            # NEU: Ein Spieler ist gestorben
+            elif packet_type == 31:
+                dead_id = struct.unpack("!B", sock.recv(1))[0]
+                dead_players.add(dead_id)
+                if dead_id == my_id:
+                    my_player.is_dead = True
+                    dead_bodies[dead_id] = (my_player.rect.x, my_player.rect.y)
+                elif dead_id in other_players:
+                    dead_bodies[dead_id] = (other_players[dead_id][0], other_players[dead_id][1])
+
+            # NEU: Imposter haben gewonnen
+            elif packet_type == 32:
+                num_imps = struct.unpack("!B", sock.recv(1))[0]
+                imposter_reveal_ids = []
+                for _ in range(num_imps):
+                    imposter_reveal_ids.append(struct.unpack("!B", sock.recv(1))[0])
+                state = "imposter_win"
 
         except Exception as e:
             print("RECEIVE THREAD ERROR:", e)
@@ -346,8 +365,6 @@ def connect_to_server(ip, name, spawnpoints):
         sock.sendall(name_data)
 
         my_id = struct.unpack('!B', sock.recv(1))[0]
-        print("Verbunden mit ID:", my_id)
-
         lx = lobby_spawn_rects[my_id % len(lobby_spawn_rects)].x
         ly = lobby_spawn_rects[my_id % len(lobby_spawn_rects)].y
         my_player = Player(lx, ly, player_images[my_id % len(player_images)])
@@ -377,44 +394,27 @@ tasks_instances = [
     tasks.PizzaCutTask(screen), tasks.VendingMachineTask(screen), tasks.BarcodeScanTask(screen),
     tasks.LockerCleanTask(screen), tasks.TrashDisposalTask(screen), tasks.PipeLeakTask(screen)
 ]
-
-for t in tasks_instances:
-    task_manager.add_task(t)
+for t in tasks_instances: task_manager.add_task(t)
 
 TASK_TEMPLATES = [
-    {"type": "books", "name": "Bücher sortieren"},
-    {"type": "chair_stack", "name": "Stühle stapeln"},
-    {"type": "window", "name": "Fenster lüften"},
-    {"type": "pc_download", "name": "Daten downloaden"},
-    {"type": "board", "name": "Tafel wischen"},
-    {"type": "projector", "name": "Beamer verkabeln"},
-    {"type": "pc_scan", "name": "Virenscan"},
-    {"type": "printer", "name": "Druckerpapier auffüllen"},
-    {"type": "bunsen", "name": "Bunsenbrenner einstellen"},
-    {"type": "chemical", "name": "Chemikalien mischen"},
-    {"type": "pencil_case", "name": "Mäppchen packen"},
-    {"type": "keyboard", "name": "Tastatur reinigen"},
-    {"type": "microscope", "name": "Mikroskop fokussieren"},
-    {"type": "circuit", "name": "Schaltkreis reparieren"},
-    {"type": "ball_basket", "name": "Bälle einsammeln"},
-    {"type": "mats", "name": "Matten stapeln"},
-    {"type": "tray_sort", "name": "Tablett sortieren"},
-    {"type": "milk_carton", "name": "Milch einfüllen"},
-    {"type": "pizza", "name": "Pizza schneiden"},
-    {"type": "vending", "name": "Automat klemmt"},
-    {"type": "barcode", "name": "Barcodes scannen"},
-    {"type": "locker", "name": "Spind aufräumen"},
-    {"type": "trash_bin", "name": "Müll wegbringen"},
-    {"type": "pipe_leak", "name": "Rohrbruch dichten"},
+    {"type": "books", "name": "Bücher sortieren"}, {"type": "chair_stack", "name": "Stühle stapeln"},
+    {"type": "window", "name": "Fenster lüften"}, {"type": "pc_download", "name": "Daten downloaden"},
+    {"type": "board", "name": "Tafel wischen"}, {"type": "projector", "name": "Beamer verkabeln"},
+    {"type": "pc_scan", "name": "Virenscan"}, {"type": "printer", "name": "Druckerpapier auffüllen"},
+    {"type": "bunsen", "name": "Bunsenbrenner einstellen"}, {"type": "chemical", "name": "Chemikalien mischen"},
+    {"type": "pencil_case", "name": "Mäppchen packen"}, {"type": "keyboard", "name": "Tastatur reinigen"},
+    {"type": "microscope", "name": "Mikroskop fokussieren"}, {"type": "circuit", "name": "Schaltkreis reparieren"},
+    {"type": "ball_basket", "name": "Bälle einsammeln"}, {"type": "mats", "name": "Matten stapeln"},
+    {"type": "tray_sort", "name": "Tablett sortieren"}, {"type": "milk_carton", "name": "Milch einfüllen"},
+    {"type": "pizza", "name": "Pizza schneiden"}, {"type": "vending", "name": "Automat klemmt"},
+    {"type": "barcode", "name": "Barcodes scannen"}, {"type": "locker", "name": "Spind aufräumen"},
+    {"type": "trash_bin", "name": "Müll wegbringen"}, {"type": "pipe_leak", "name": "Rohrbruch dichten"},
 ]
-
 task_buttons = []
 
 def draw_task_buttons(surface, buttons, player_obj, camera_x, camera_y):
     for btn in buttons:
         t_idx = btn["task_index"]
-        
-        # GEÄNDERT: Nutze player_obj.my_assigned_tasks
         if player_obj.role == "Crewmate" and t_idx not in player_obj.my_assigned_tasks:
             continue
 
@@ -426,9 +426,7 @@ def draw_task_buttons(surface, buttons, player_obj, camera_x, camera_y):
         dr = r.copy()
         dr.x -= camera_x
         dr.y -= camera_y
-        dr_center = dr.center
         
-        # GEÄNDERT: Nutze player_obj.my_completed_tasks
         color = (0, 255, 0) if t_idx in player_obj.my_completed_tasks else (0, 255, 255)
         pygame.draw.rect(surface, color, dr, 2, border_radius=4)
         
@@ -439,14 +437,14 @@ def draw_task_buttons(surface, buttons, player_obj, camera_x, camera_y):
                 lbl_text = proximity_font.render(f"[E] {btn['name']}", True, (255, 255, 255))
 
 # =========================
-# LOBBY MENÜ DRAWING (Dynamisch zentriert für Vollbild)
+# MENÜ DRAWING
 # =========================
 menu_font = pygame.font.SysFont("arial", 40)
 small_font = pygame.font.SysFont("arial", 28)
 
 info_text1 = small_font.render(f"Bewegung: WASD", True, (255, 255, 255))
 info_text2 = small_font.render(f"Map öffnen/schließen: M", True, (255, 255, 255))
-info_text3 = small_font.render(f"Benutzen/Interagieren: E", True, (255, 255, 255))
+info_text3 = small_font.render(f"Benutzen/Interagieren/Kill: E", True, (255, 255, 255))
 
 ip_input = TextInput(WIDTH // 2 - 175, HEIGHT // 2 - 100, 350, 60, small_font)
 name_input = TextInput(WIDTH // 2 - 175, HEIGHT // 2 + 20, 350, 60, small_font)
@@ -455,66 +453,44 @@ def draw_menu():
     screen.fill((25, 25, 35))
     title = menu_font.render("MULTIPLAYER LOGIN", True, (255, 255, 255))
     screen.blit(title, (WIDTH // 2 - title.get_width() // 2, HEIGHT // 2 - 220))
-    
     screen.blit(small_font.render("SERVER IP", True, (200, 200, 200)), (WIDTH // 2 - 175, HEIGHT // 2 - 140))
     screen.blit(small_font.render("NAME", True, (200, 200, 200)), (WIDTH // 2 - 175, HEIGHT // 2 - 20))
-    
     ip_input.draw(screen)
     name_input.draw(screen)
-    
     connect_txt = small_font.render("ENTER = CONNECT", True, (100, 255, 100))
     screen.blit(connect_txt, (WIDTH // 2 - connect_txt.get_width() // 2, HEIGHT // 2 + 120))
 
 def draw_lobby():
-    # Kamera genau wie im Hauptspiel auf den eigenen Spieler zentrieren
     camera_x = my_player.rect.x - (INTERNAL_SIZE // 2) + (PLAYER_SIZE // 2)
     camera_y = my_player.rect.y - (INTERNAL_SIZE // 2) + (PLAYER_SIZE // 2)
 
-    # Auf die interne Renderfläche zeichnen
     internal_surface.fill((20, 20, 30))
     internal_surface.blit(lobby_bg, (-camera_x, -camera_y))
 
-    # Andere Spieler in der Lobby zeichnen
     for p_id, pos in other_players.items():
         enemy_img = player_images.get(p_id % len(player_images))
         if enemy_img:
             internal_surface.blit(enemy_img, (pos[0] - camera_x, pos[1] - camera_y))
-            # Namen der Mitspieler rendern
             e_name = player_names.get(p_id, f"Player {p_id}")
             name_text = name_font.render(e_name, True, (255, 255, 255))
-            nx = (pos[0] - camera_x) + (PLAYER_SIZE // 2) - (name_text.get_width() // 2)
-            ny = (pos[1] - camera_y) - 16
-            internal_surface.blit(name_text, (nx, ny))
+            internal_surface.blit(name_text, ((pos[0] - camera_x) + (PLAYER_SIZE // 2) - (name_text.get_width() // 2), (pos[1] - camera_y) - 16))
 
-    # Eigenen Spieler in der Lobby zeichnen
     my_player.draw(internal_surface, camera_x, camera_y)
     my_name = player_names.get(my_id, "Ich")
     my_name_text = name_font.render(my_name, True, (255, 255, 255))
-    mx = (my_player.rect.x - camera_x) + (PLAYER_SIZE // 2) - (my_name_text.get_width() // 2)
-    my = (my_player.rect.y - camera_y) - 16
-    internal_surface.blit(my_name_text, (mx, my))
+    internal_surface.blit(my_name_text, ((my_player.rect.x - camera_x) + (PLAYER_SIZE // 2) - (my_name_text.get_width() // 2), (my_player.rect.y - camera_y) - 16))
 
-    # Pixelgenaue Skalierung für das Vollbild-Ergebnis berechnen
     scaled_size = min(WIDTH, HEIGHT)
     scaled_surface = pygame.transform.scale(internal_surface, (scaled_size, scaled_size))
-    draw_x = (WIDTH - scaled_size) // 2
-    draw_y = (HEIGHT - scaled_size) // 2
-
     screen.fill((0, 0, 0))
-    screen.blit(scaled_surface, (draw_x, draw_y))
+    screen.blit(scaled_surface, ((WIDTH - scaled_size) // 2, (HEIGHT - scaled_size) // 2))
 
-    # ================= UI OVERLAY (Direkt auf den Hauptbildschirm) =================
     title = menu_font.render("LOBBY", True, (255, 255, 255))
     screen.blit(title, (WIDTH // 2 - title.get_width() // 2, 40))
-    
-    # Spielerübersicht links unten
-    count_txt = small_font.render(f"Spieler online: {len(player_names)} / 15", True, (255, 255, 255))
-    screen.blit(count_txt, (40, HEIGHT - 80))
-
+    screen.blit(small_font.render(f"Spieler online: {len(player_names)} / 15", True, (255, 255, 255)), (40, HEIGHT - 80))
     imp_text = small_font.render(f"Imposter: {imposter_count}", True, (255, 255, 255))
     screen.blit(imp_text, (WIDTH // 2 - imp_text.get_width() // 2, HEIGHT - 150))
 
-    # Host sieht den grünen Startbutton, Client sieht Wartetext
     if my_id == host_id:
         btn = pygame.Rect(WIDTH - 240, HEIGHT - 100, 200, 60)
         pygame.draw.rect(screen, (0, 220, 100), btn, border_radius=10)
@@ -534,9 +510,6 @@ def draw_lobby():
         wait_txt = small_font.render("Warte auf Host...", True, (185, 185, 185))
         screen.blit(wait_txt, (WIDTH - 260, HEIGHT - 80))
 
-# =========================
-# ASSETS & MAP INITIALISIERUNG
-# =========================
 base_path = "Assets/Map/Map/"
 try:
     floor_img = pygame.image.load(os.path.join(base_path, "Floor.png")).convert_alpha()
@@ -544,68 +517,30 @@ try:
     objects_img = pygame.image.load(os.path.join(base_path, "Objects.png")).convert_alpha()
     lobby_bg = pygame.image.load(os.path.join(base_path, "Lobby.png")).convert_alpha()
 except Exception as e:
-    print(f"Fehler beim Laden der Map-Bilder: {e}")
     pygame.quit()
     sys.exit()
-    # Map laden
 
 def load_lobby_map():
-    lobby_hitboxes = []
-    lobby_spawns = [None] * 15  # Platzhalter für bis zu 15 Spieler
-    fallback_spawns = []
-
+    lobby_hitboxes, lobby_spawns, fallback_spawns = [], [None] * 15, []
     try:
-        path = os.path.join("Assets", "Map", "Map", "Lobby.json")
-        with open(path, "r", encoding="utf-8") as f:
+        with open(os.path.join("Assets", "Map", "Map", "Lobby.json"), "r", encoding="utf-8") as f:
             data = json.load(f)
-            
         for layer in data.get("layers", []):
-            layer_name = layer.get("name")
-            layer_type = layer.get("type")
-            
-            if layer_type == "objectgroup":
-                # Hitboxen extrahieren
-                if layer_name in ["Hitboxes", "ObjectsHitbox"]:
+            if layer.get("type") == "objectgroup":
+                if layer.get("name") in ["Hitboxes", "ObjectsHitbox"]:
                     for obj in layer.get("objects", []):
-                        rect = pygame.Rect(
-                            obj.get("x", 0),
-                            obj.get("y", 0),
-                            obj.get("width", 0),
-                            obj.get("height", 0)
-                        )
-                        lobby_hitboxes.append(rect)
-                        
-                # Spawnpoints extrahieren
-                elif layer_name == "Spawnpoints":
+                        lobby_hitboxes.append(pygame.Rect(obj.get("x",0), obj.get("y",0), obj.get("width",0), obj.get("height",0)))
+                elif layer.get("name") == "Spawnpoints":
                     for obj in layer.get("objects", []):
-                        name = obj.get("name", "")
-                        x = obj.get("x", 0)
-                        y = obj.get("y", 0)
+                        x, y, name = obj.get("x",0), obj.get("y",0), obj.get("name","")
                         fallback_spawns.append((x, y))
-                        
-                        # Versuchen, die Zahl aus "Spawn13" o.ä. zu parsen
                         try:
                             num = int(''.join(filter(str.isdigit, name)))
-                            # Umrechnung auf 0-basierten Index (Spawn1 -> Index 0)
-                            if 1 <= num <= 15:
-                                lobby_spawns[num - 1] = (x, y)
-                            elif 0 <= num < 15:
-                                lobby_spawns[num] = (x, y)
-                        except ValueError:
-                            pass
-    except Exception as e:
-        print(f"[FEHLER] Lobby.json konnte nicht geladen werden: {e}")
-
-    # Löcher in den Spawns mit Fallbacks auffüllen
-    final_spawns = []
-    for s in lobby_spawns:
-        if s is not None:
-            final_spawns.append(s)
-        elif fallback_spawns:
-            final_spawns.append(fallback_spawns[0])
-        else:
-            final_spawns.append((100, 100)) # Absoluter Fallback
-
+                            if 1 <= num <= 15: lobby_spawns[num - 1] = (x, y)
+                            elif 0 <= num < 15: lobby_spawns[num] = (x, y)
+                        except ValueError: pass
+    except: pass
+    final_spawns = [(s if s is not None else (fallback_spawns[0] if fallback_spawns else (100, 100))) for s in lobby_spawns]
     return lobby_hitboxes, final_spawns
 
 lobby_hitboxes, lobby_spawnpoints = load_lobby_map()
@@ -615,7 +550,6 @@ MAP_WIDTH_PX, MAP_HEIGHT_PX = floor_img.get_size()
 MINIMAP_WIDTH = 800  
 MINIMAP_HEIGHT = int(MAP_HEIGHT_PX * (MINIMAP_WIDTH / MAP_WIDTH_PX))
 minimap_bg = pygame.Surface((MINIMAP_WIDTH, MINIMAP_HEIGHT))
-
 minimap_bg.blit(pygame.transform.scale(floor_img, (MINIMAP_WIDTH, MINIMAP_HEIGHT)), (0, 0))
 minimap_bg.blit(pygame.transform.scale(walls_img, (MINIMAP_WIDTH, MINIMAP_HEIGHT)), (0, 0))
 
@@ -623,13 +557,7 @@ hitboxes, vents, plants, tasks_hitboxes, mapwalls, spawnpoints = load_hitboxes(o
 
 for i, rect in enumerate(tasks_hitboxes):
     if i < len(TASK_TEMPLATES):
-        template = TASK_TEMPLATES[i]
-        task_buttons.append({
-            "rect": rect,
-            "type": template["type"],
-            "task_index": i,
-            "name": template["name"]
-        })
+        task_buttons.append({"rect": rect, "type": TASK_TEMPLATES[i]["type"], "task_index": i, "name": TASK_TEMPLATES[i]["name"]})
 
 # =========================
 # HAUPTSCHLEIFE
@@ -639,7 +567,6 @@ show_minimap = False
 
 while running:
     dt = clock.tick(60) / 1000.0
-
     was_task_active = task_manager.active_task is not None
 
     for event in pygame.event.get():
@@ -657,23 +584,19 @@ while running:
 
         elif state == "lobby":
             if event.type == pygame.MOUSEBUTTONDOWN and my_id == host_id:
-                btn = pygame.Rect(WIDTH - 240, HEIGHT - 100, 200, 60) # Koordinaten angepasst an draw_lobby()
-                
-                # HIER DIE BEIDEN BUTTONS FÜR DEN EVENT-LOOP DEFINIEREN:
+                btn = pygame.Rect(WIDTH - 240, HEIGHT - 100, 200, 60)
                 btn_minus = pygame.Rect(WIDTH // 2 - 100, HEIGHT - 155, 40, 40)
                 btn_plus = pygame.Rect(WIDTH // 2 + 60, HEIGHT - 155, 40, 40)
                 
                 if btn.collidepoint(event.pos):
-                    try:
-                        sock.sendall(struct.pack("!B", 99))
+                    try: sock.sendall(struct.pack("!B", 99))
                     except: pass
-                # NEU: Imposter Anzahl verändern
                 elif btn_minus.collidepoint(event.pos):
                     if imposter_count > 1:
                         try: sock.sendall(struct.pack("!BB", 11, imposter_count - 1))
                         except: pass
                 elif btn_plus.collidepoint(event.pos):
-                    if imposter_count < 3: # Begrenzung z.B. auf 3
+                    if imposter_count < 3:
                         try: sock.sendall(struct.pack("!BB", 11, imposter_count + 1))
                         except: pass
 
@@ -681,11 +604,10 @@ while running:
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_q:
                     if task_manager.active_task:
-                        task_aborted = True # NEU: Markieren als manuell abgebrochen
+                        task_aborted = True
                         task_manager.reset_active_task()
                         task_manager.active_task = None
-                    elif show_minimap:
-                        show_minimap = False
+                    elif show_minimap: show_minimap = False
                     else:
                         running = False
                         pygame.quit()
@@ -694,26 +616,44 @@ while running:
                 if event.key == pygame.K_m and task_manager.active_task is None:
                     show_minimap = not show_minimap
 
+                # NEU: Kill- & Task-Logik
                 if event.key == pygame.K_e and task_manager.active_task is None and not show_minimap:
-                    for btn in task_buttons:
-                        t_idx = btn["task_index"]
-                        # GEÄNDERT:
-                        if my_player.role == "Crewmate" and t_idx not in my_player.my_assigned_tasks:
-                            continue
+                    if my_player.role == "Imposter" and not my_player.is_dead:
+                        # Kill Suche
+                        closest_id = None
+                        closest_dist = 60 # Kill-Reichweite
+                        my_center = my_player.rect.center
+                        for p_id, pos in other_players.items():
+                            if p_id not in dead_players:
+                                e_center = (pos[0] + PLAYER_SIZE//2, pos[1] + PLAYER_SIZE//2)
+                                dist = math.hypot(my_center[0] - e_center[0], my_center[1] - e_center[1])
+                                if dist < closest_dist:
+                                    closest_dist = dist
+                                    closest_id = p_id
+                        
+                        if closest_id is not None:
+                            try: sock.sendall(struct.pack("!BB", 30, closest_id)) # Sende Kill-Paket
+                            except: pass
 
-                        distance = math.hypot(my_player.rect.centerx - btn["rect"].centerx, my_player.rect.centery - btn["rect"].centery)
-                        if distance < 50:
-                            if t_idx in my_player.my_completed_tasks: # GEÄNDERT
-                                already_done_timer = 90
-                            else:
-                                if task_manager.start_task(t_idx) == "ALREADY_DONE":
+                    elif my_player.role == "Crewmate":
+                        # Aufgaben erledigen (auch als Geist möglich)
+                        for btn in task_buttons:
+                            t_idx = btn["task_index"]
+                            if t_idx not in my_player.my_assigned_tasks: continue
+
+                            distance = math.hypot(my_player.rect.centerx - btn["rect"].centerx, my_player.rect.centery - btn["rect"].centery)
+                            if distance < 50:
+                                if t_idx in my_player.my_completed_tasks:
                                     already_done_timer = 90
                                 else:
-                                    active_task_idx = t_idx
-                                    task_aborted = False 
-                            break
+                                    if task_manager.start_task(t_idx) == "ALREADY_DONE":
+                                        already_done_timer = 90
+                                    else:
+                                        active_task_idx = t_idx
+                                        task_aborted = False 
+                                break
                 
-                if event.key == pygame.K_SPACE and not show_minimap:
+                if event.key == pygame.K_SPACE and not show_minimap and not my_player.is_dead:
                     cv = get_current_vent(my_player, vents)
                     if cv:
                         next_vent = vents[(vents.index(cv) + 1) % len(vents)]
@@ -721,36 +661,22 @@ while running:
                         try: sock.sendall(struct.pack('!Bii', 2, int(my_player.rect.x), int(my_player.rect.y)))
                         except: pass
 
-                elif event.key == pygame.K_HASH and not show_minimap:
-                    cp = get_current_plant(my_player, plants)
-                    if cp:
-                        next_plant = plants[(plants.index(cp) + 1) % len(plants)]
-                        my_player.rect.center = next_plant.center
-                        try: sock.sendall(struct.pack('!Bii', 2, int(my_player.rect.x), int(my_player.rect.y)))
-                        except: pass
-
         task_manager.handle_event(event)
 
     if state == "game" and task_manager.active_task is None and not show_minimap and game_started:
         if my_player.move(pygame.key.get_pressed(), hitboxes):
-            try:
-                sock.sendall(struct.pack('!Bii', 2, int(my_player.rect.x), int(my_player.rect.y)))
-            except Exception as e:
-                print(f"Verbindung verloren: {e}")
-                running = False
+            try: sock.sendall(struct.pack('!Bii', 2, int(my_player.rect.x), int(my_player.rect.y)))
+            except: running = False
 
     elif state == "lobby" and not game_started and my_id is not None:
         if my_player.move(pygame.key.get_pressed(), lobby_hitboxes):
-            try:
-                sock.sendall(struct.pack('!Bii', 2, int(my_player.rect.x), int(my_player.rect.y)))
-            except Exception as e:
-                print(f"Verbindung verloren: {e}")
-                running = False
+            try: sock.sendall(struct.pack('!Bii', 2, int(my_player.rect.x), int(my_player.rect.y)))
+            except: running = False
 
-    elif state == "crew_win":
+    elif state in ["crew_win", "imposter_win"]:
             if event.type == pygame.KEYDOWN and event.key == pygame.K_RETURN:
                 if my_id == host_id:
-                    try: sock.sendall(struct.pack("!B", 23)) # Sende Rückkehr-Befehl
+                    try: sock.sendall(struct.pack("!B", 23))
                     except: pass
 
     # --- RENDERING ---
@@ -762,7 +688,6 @@ while running:
         camera_x = my_player.rect.x - (INTERNAL_SIZE // 2) + (PLAYER_SIZE // 2)
         camera_y = my_player.rect.y - (INTERNAL_SIZE // 2) + (PLAYER_SIZE // 2)
 
-        # Spielfeld aufbauen
         internal_surface.fill((40, 80, 40))
         internal_surface.blit(floor_img, (-camera_x, -camera_y))
         internal_surface.blit(walls_img, (-camera_x, -camera_y))
@@ -770,12 +695,35 @@ while running:
 
         draw_task_buttons(internal_surface, task_buttons, my_player, camera_x, camera_y)
 
+        # NEU: Zentrum des eigenen Spielers vorziehen, um Sichtweite zu berechnen
+        my_center = my_player.rect.center
+
+        # NEU: Leichen rendern (mit Sichtlinien-Prüfung wie bei lebenden Spielern)
+        for d_id, (dx, dy) in dead_bodies.items():
+            b_img = player_dead_images.get(d_id % len(player_dead_images))
+            if not b_img: continue
+            
+            body_center = (dx + (PLAYER_SIZE // 2), dy + (PLAYER_SIZE // 2))
+            distance = math.hypot(my_center[0] - body_center[0], my_center[1] - body_center[1])
+            
+            # Prüfen ob die Leiche im Radius ist und nicht von einer Wand verdeckt wird
+            if distance <= VISION_RADIUS:
+                if has_line_of_sight(my_center, body_center, mapwalls):
+                    internal_surface.blit(b_img, (dx - camera_x, dy - camera_y))
+
         # Andere Spieler zeichnen
         my_center = my_player.rect.center
         for p_id, pos in other_players.items():
-            enemy_img = player_images.get(p_id % len(player_images))
-            if not enemy_img:
-                continue
+            # Geister ausblenden für lebende, Geister sehen andere Geister transparent
+            if p_id in dead_players:
+                if not my_player.is_dead:
+                    continue # Nicht sichtbar für Lebende
+                enemy_img = player_images.get(p_id % len(player_images)).copy()
+                enemy_img.set_alpha(128)
+            else:
+                enemy_img = player_images.get(p_id % len(player_images))
+                
+            if not enemy_img: continue
             
             enemy_center = (pos[0] + (PLAYER_SIZE // 2), pos[1] + (PLAYER_SIZE // 2))
             distance = math.hypot(my_center[0] - enemy_center[0], my_center[1] - enemy_center[1])
@@ -785,22 +733,20 @@ while running:
                 if has_line_of_sight(my_center, enemy_center, mapwalls):
                     is_visible = True
                     
-            if p_id not in player_visibility:
-                player_visibility[p_id] = 0.0
+            if p_id not in player_visibility: player_visibility[p_id] = 0.0
                 
-            if is_visible:
-                player_visibility[p_id] = min(255.0, player_visibility[p_id] + FADE_SPEED)
-            else:
-                player_visibility[p_id] = max(0.0, player_visibility[p_id] - FADE_SPEED)
+            if is_visible: player_visibility[p_id] = min(255.0, player_visibility[p_id] + FADE_SPEED)
+            else: player_visibility[p_id] = max(0.0, player_visibility[p_id] - FADE_SPEED)
                 
             current_alpha = int(player_visibility[p_id])
             
             if current_alpha > 0:
                 img_copy = enemy_img.copy()
-                img_copy.set_alpha(current_alpha)
+                if p_id in dead_players: img_copy.set_alpha(min(current_alpha, 128))
+                else: img_copy.set_alpha(current_alpha)
+                    
                 internal_surface.blit(img_copy, (pos[0] - camera_x, pos[1] - camera_y))
                 
-                # Mitspieler-Namen zeichnen (inklusive Transparenz-Fade)
                 e_name = player_names.get(p_id, f"Player {p_id}")
                 name_text = name_font.render(e_name, True, (255, 255, 255))
                 name_text.set_alpha(current_alpha)
@@ -810,29 +756,18 @@ while running:
 
         # Eigenen Spieler zeichnen
         my_player.draw(internal_surface, camera_x, camera_y)
-        
-        # Eigenen Namen über dem Kopf zeichnen
         my_name = player_names.get(my_id, "Ich")
         my_name_text = name_font.render(my_name, True, (255, 255, 255))
-        mx = (my_player.rect.x - camera_x) + (PLAYER_SIZE // 2) - (my_name_text.get_width() // 2)
-        my = (my_player.rect.y - camera_y) - 16
-        internal_surface.blit(my_name_text, (mx, my))
+        if my_player.is_dead: my_name_text.set_alpha(128)
+        internal_surface.blit(my_name_text, ((my_player.rect.x - camera_x) + (PLAYER_SIZE // 2) - (my_name_text.get_width() // 2), (my_player.rect.y - camera_y) - 16))
 
-        # SIGHT MASK / FOG OF WAR DARÜBERLEGEN
-        # Schwärzt alles außerhalb des Sichtkreises ab
         internal_surface.blit(fog_overlay, (0, 0))
 
-        # Skalieren & Zentrieren auf den Bildschirm
         scaled_size = min(WIDTH, HEIGHT)
         scaled_surface = pygame.transform.scale(internal_surface, (scaled_size, scaled_size))
-        draw_x = (WIDTH - scaled_size) // 2
-        draw_y = (HEIGHT - scaled_size) // 2
-
-        # Bildschirm leeren: Jetzt PURE BLACK für pechschwarze Ränder links und rechts
         screen.fill((0, 0, 0))
-        screen.blit(scaled_surface, (draw_x, draw_y))
+        screen.blit(scaled_surface, ((WIDTH - scaled_size) // 2, (HEIGHT - scaled_size) // 2))
 
-        # HUD / Overlays direkt auf den Screen blitten
         if already_done_timer > 0 and task_manager.active_task is None:
             already_done_timer -= 1
             msg_text = warning_font.render("Du hast diese Aufgabe bereits erledigt!", True, (255, 80, 80))
@@ -847,97 +782,83 @@ while running:
         is_task_active = task_manager.active_task is not None
         if was_task_active and not is_task_active:
             if not task_aborted and active_task_idx != -1:
-                if active_task_idx not in my_player.my_completed_tasks: # GEÄNDERT
-                    my_player.my_completed_tasks.append(active_task_idx) # GEÄNDERT
-                    try:
-                        sock.sendall(struct.pack("!B", 20)) 
+                if active_task_idx not in my_player.my_completed_tasks:
+                    my_player.my_completed_tasks.append(active_task_idx)
+                    try: sock.sendall(struct.pack("!B", 20)) 
                     except: pass
             active_task_idx = -1
             task_aborted = False
 
-        bar_width = 300
-        bar_height = 20
-        bar_x = 20
-        bar_y = 170
+        bar_width, bar_height, bar_x, bar_y = 300, 20, 20, 170
         pygame.draw.rect(screen, (40, 40, 40), (bar_x, bar_y, bar_width, bar_height), border_radius=10)
-        
         if global_task_max > 0:
             fill_width = int(bar_width * (global_task_progress / global_task_max))
-            if fill_width > 0:
-                pygame.draw.rect(screen, (0, 220, 100), (bar_x, bar_y, fill_width, bar_height), border_radius=10)
+            if fill_width > 0: pygame.draw.rect(screen, (0, 220, 100), (bar_x, bar_y, fill_width, bar_height), border_radius=10)
         pygame.draw.rect(screen, (255, 255, 255), (bar_x, bar_y, bar_width, bar_height), 2, border_radius=10)
         
         prog_txt = proximity_font.render(f"Gesamt-Fortschritt ({global_task_progress}/{global_task_max})", True, (255, 255, 255))
         screen.blit(prog_txt, (bar_x + bar_width//2 - prog_txt.get_width()//2, bar_y + 3))
 
-        role_hud = small_font.render(f"Rolle: {my_player.role}", True, (255, 255, 255))
+        status_str = f"Rolle: {my_player.role} {'(GEIST)' if my_player.is_dead else ''}"
+        role_hud = small_font.render(status_str, True, (255, 100, 100) if my_player.is_dead else (255, 255, 255))
         screen.blit(role_hud, (20, 20))
         screen.blit(info_text1, (20, 80))
         screen.blit(info_text2, (20, 110))
         screen.blit(info_text3, (20, 140))
 
-        # NEU: Großes Intro-Overlay zu Spielbeginn
         if intro_timer > 0:
             intro_timer -= 1
-            
             overlay = pygame.Surface((WIDTH, HEIGHT))
-            overlay.set_alpha(180) # Halbtransparent schwarz
+            overlay.set_alpha(180)
             overlay.fill((0, 0, 0))
             screen.blit(overlay, (0, 0))
             
-            # Farbe je nach Rolle
             title_color = (255, 50, 50) if my_player.role == "Imposter" else (50, 200, 255)
             role_text = menu_font.render(f"DU BIST: {my_player.role.upper()}", True, title_color)
             desc_text = small_font.render(my_player.role_desc, True, (255, 255, 255))
-            
             screen.blit(role_text, (WIDTH // 2 - role_text.get_width() // 2, HEIGHT // 2 - 60))
             screen.blit(desc_text, (WIDTH // 2 - desc_text.get_width() // 2, HEIGHT // 2 + 10))
 
-        # MINIMAP OVERLAY RENDERING
         if show_minimap and task_manager.active_task is None:
-            mm_x = (WIDTH - MINIMAP_WIDTH) // 2
-            mm_y = (HEIGHT - MINIMAP_HEIGHT) // 2
-
+            mm_x, mm_y = (WIDTH - MINIMAP_WIDTH) // 2, (HEIGHT - MINIMAP_HEIGHT) // 2
             pygame.draw.rect(screen, (25, 25, 30), (mm_x - 12, mm_y - 12, MINIMAP_WIDTH + 24, MINIMAP_HEIGHT + 24), border_radius=12)
             screen.blit(minimap_bg, (mm_x, mm_y))
             pygame.draw.rect(screen, (240, 240, 240), (mm_x, mm_y, MINIMAP_WIDTH, MINIMAP_HEIGHT), 2, border_radius=4)
 
-            # NEU: Zeige die Tasks auf der Minimap
             if my_player.role == "Crewmate":
                 for btn in task_buttons:
                     t_idx = btn["task_index"]
-                    if t_idx in my_player.my_assigned_tasks: # GEÄNDERT
+                    if t_idx in my_player.my_assigned_tasks:
                         t_x = mm_x + int((btn["rect"].centerx / MAP_WIDTH_PX) * MINIMAP_WIDTH)
                         t_y = mm_y + int((btn["rect"].centery / MAP_HEIGHT_PX) * MINIMAP_HEIGHT)
-
-                        t_col = (0, 255, 0) if t_idx in my_player.my_completed_tasks else (255, 255, 0) # GEÄNDERT
+                        t_col = (0, 255, 0) if t_idx in my_player.my_completed_tasks else (255, 255, 0)
                         pygame.draw.circle(screen, t_col, (t_x, t_y), 6)
                         pygame.draw.circle(screen, (0, 0, 0), (t_x, t_y), 6, 1)
 
-            # Eigener Spieler (Rot)
             player_mm_x = mm_x + int((my_player.rect.centerx / MAP_WIDTH_PX) * MINIMAP_WIDTH)
             player_mm_y = mm_y + int((my_player.rect.centery / MAP_HEIGHT_PX) * MINIMAP_HEIGHT)
-
-            pygame.draw.circle(screen, (255, 30, 30), (player_mm_x, player_mm_y), 8)
+            p_col = (150, 50, 50) if my_player.is_dead else (255, 30, 30)
+            pygame.draw.circle(screen, p_col, (player_mm_x, player_mm_y), 8)
             pygame.draw.circle(screen, (255, 255, 255), (player_mm_x, player_mm_y), 8, 2)
 
-    elif state == "crew_win":
+    elif state in ["crew_win", "imposter_win"]:
         screen.fill((20, 25, 30))
-        win_title = menu_font.render("CREWMATES GEWINNEN!", True, (0, 255, 150))
-        win_sub = small_font.render("Alle Aufgaben wurden erledigt.", True, (255, 255, 255))
+        if state == "crew_win":
+            win_title = menu_font.render("CREWMATES GEWINNEN!", True, (0, 255, 150))
+            win_sub = small_font.render("Alle Aufgaben wurden erledigt.", True, (255, 255, 255))
+        else:
+            win_title = menu_font.render("IMPOSTER GEWINNEN!", True, (255, 50, 50))
+            win_sub = small_font.render("Die Crew wurde eliminiert.", True, (255, 255, 255))
+
         screen.blit(win_title, (WIDTH // 2 - win_title.get_width() // 2, HEIGHT // 2 - 100))
         screen.blit(win_sub, (WIDTH // 2 - win_sub.get_width() // 2, HEIGHT // 2 - 40))
         
-        # Imposter-Namen auflösen
         imp_names = [player_names.get(i_id, f"Spieler {i_id}") for i_id in imposter_reveal_ids]
         imp_text = small_font.render(f"Imposter war(en): {', '.join(imp_names)}", True, (255, 50, 50))
         screen.blit(imp_text, (WIDTH // 2 - imp_text.get_width() // 2, HEIGHT // 2 + 20))
         
-        # Interaktions-Hinweis zur Lobby-Rückkehr
-        if my_id == host_id:
-            back_txt = small_font.render("Drücke ENTER, um alle in die Lobby zurückzuholen", True, (255, 255, 255))
-        else:
-            back_txt = small_font.render("Warte auf den Host für Lobby-Rückkehr...", True, (150, 150, 150))
+        if my_id == host_id: back_txt = small_font.render("Drücke ENTER, um alle in die Lobby zurückzuholen", True, (255, 255, 255))
+        else: back_txt = small_font.render("Warte auf den Host für Lobby-Rückkehr...", True, (150, 150, 150))
         screen.blit(back_txt, (WIDTH // 2 - back_txt.get_width() // 2, HEIGHT // 2 + 100))
 
     pygame.display.update()
