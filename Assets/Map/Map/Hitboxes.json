@@ -506,7 +506,7 @@
                  "y":608.875
                 }, 
                 {
-                 "height":18.8864000000001,
+                 "height":18.8864,
                  "id":473,
                  "name":"Task4",
                  "opacity":1,
@@ -514,8 +514,8 @@
                  "type":"",
                  "visible":true,
                  "width":22.5,
-                 "x":576.083333333333,
-                 "y":1345.73666666667
+                 "x":576.083,
+                 "y":1345.74
                 }, 
                 {
                  "height":45,
@@ -526,8 +526,8 @@
                  "type":"",
                  "visible":true,
                  "width":70.25,
-                 "x":168.083333333333,
-                 "y":1322.08333333333
+                 "x":168.083,
+                 "y":1322.08
                 }, 
                 {
                  "height":28.6667,
@@ -756,6 +756,29 @@
                  "width":16,
                  "x":22.6667,
                  "y":34
+                }],
+         "opacity":1,
+         "type":"objectgroup",
+         "visible":true,
+         "x":0,
+         "y":0
+        }, 
+        {
+         "draworder":"topdown",
+         "id":25,
+         "name":"EmergencyMeeting",
+         "objects":[
+                {
+                 "height":76,
+                 "id":569,
+                 "name":"",
+                 "opacity":1,
+                 "rotation":0,
+                 "type":"",
+                 "visible":true,
+                 "width":96.25,
+                 "x":600,
+                 "y":932
                 }],
          "opacity":1,
          "type":"objectgroup",
@@ -6670,8 +6693,8 @@
          "x":0,
          "y":0
         }],
- "nextlayerid":25,
- "nextobjectid":569,
+ "nextlayerid":26,
+ "nextobjectid":570,
  "orientation":"orthogonal",
  "renderorder":"right-down",
  "tiledversion":"1.12.1",

@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<map version="1.10" tiledversion="1.12.1" orientation="orthogonal" renderorder="right-down" width="78" height="78" tilewidth="24" tileheight="24" infinite="0" nextlayerid="25" nextobjectid="569">
+<map version="1.10" tiledversion="1.12.1" orientation="orthogonal" renderorder="right-down" width="78" height="78" tilewidth="24" tileheight="24" infinite="0" nextlayerid="26" nextobjectid="570">
  <tileset firstgid="1" source="../../../Python/Freizeit/ThalheimerIsAmongUs/Thalheimer-is-Among-Us/Thalheimer is Among us/Assets/Map/Kachelsätze/4 BigSet.tsx"/>
  <tileset firstgid="91" source="../../../Python/Freizeit/ThalheimerIsAmongUs/Thalheimer-is-Among-Us/Thalheimer is Among us/Assets/Map/Kachelsätze/jdt.tsx"/>
  <layer id="17" name="FloorsFloor" width="78" height="78">
@@ -171,6 +171,9 @@
   <object id="494" name="Task21" x="1177" y="1300" width="17" height="42.125"/>
   <object id="495" name="Task22" x="815.25" y="1110.25" width="16.5" height="17"/>
   <object id="496" name="Task23" x="22.6667" y="34" width="16" height="13.6667"/>
+ </objectgroup>
+ <objectgroup id="25" name="EmergencyMeeting">
+  <object id="569" x="600" y="932" width="96.25" height="76"/>
  </objectgroup>
  <layer id="18" name="MagicMushroom" width="78" height="78">
   <data encoding="csv">
