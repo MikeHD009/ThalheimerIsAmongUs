@@ -39,6 +39,16 @@ fog_overlay.fill((0, 0, 0))
 pygame.draw.circle(fog_overlay, (255, 255, 255), (INTERNAL_SIZE // 2, INTERNAL_SIZE // 2), VISION_RADIUS)
 fog_overlay.set_colorkey((255, 255, 255))
 
+meeting_phase = 0 # 0 = Chat, 1 = Voting
+voted_players = set()
+my_vote = None
+meeting_cooldown = 0
+ejected_player = 255
+ejected_timer = 0
+
+meeting_cooldown_timer = 0  # Initialize this variable
+can_call_meeting = False
+
 # =========================
 # BILDER LADEN & SKALIEREN
 # =========================
@@ -154,8 +164,9 @@ class TextInput:
 # =========================
 def load_hitboxes(filepath):
     hitboxes, vents, plants, tasks_hitboxes, mapwalls, spawnpoints = [], [], [], [], [], []
+    emergency_hitboxes = []
     if not os.path.exists(filepath):
-        return hitboxes, vents, plants, tasks_hitboxes, mapwalls, spawnpoints
+        return hitboxes, vents, plants, tasks_hitboxes, mapwalls, spawnpoints, emergency_hitboxes
     
     with open(filepath, "r", encoding="utf-8-sig") as f:
         map_data = json.load(f)
@@ -199,8 +210,13 @@ def load_hitboxes(filepath):
             elif "data" in layer:
                 for i, t_id in enumerate(layer["data"]):
                     if t_id != 0: spawnpoints.append(pygame.Rect((i % map_width) * TILE_SIZE, (i // map_width) * TILE_SIZE, TILE_SIZE, TILE_SIZE))
+
+        elif name == "EmergencyMeeting":
+            if "objects" in layer:
+                for obj in layer["objects"]: 
+                    emergency_hitboxes.append(pygame.Rect(obj["x"], obj["y"], obj["width"], obj["height"]))
                         
-    return hitboxes, vents, plants, tasks_hitboxes, mapwalls, spawnpoints
+    return hitboxes, vents, plants, tasks_hitboxes, mapwalls, spawnpoints, emergency_hitboxes
 
 def get_current_vent(player, vents):
     for vent in vents:
@@ -242,6 +258,15 @@ def has_line_of_sight(p1, p2, hitboxes):
 def setup_socket(s):
     s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
 
+def recv_exact(sock, num_bytes):
+    buffer = b""
+    while len(buffer) < num_bytes:
+        chunk = sock.recv(num_bytes - len(buffer))
+        if not chunk:
+            raise ConnectionResetError("Verbindung zum Server verloren.")
+        buffer += chunk
+    return buffer
+
 def receive_data(sock):
     global other_players, player_names, player_count, host_id, game_started, state
     global imposter_count, intro_timer, global_task_progress, global_task_max, dead_players, dead_bodies
@@ -253,20 +278,19 @@ def receive_data(sock):
             packet_type = struct.unpack("!B", data)[0]
 
             if packet_type == 1:
-                player_count, host_id = struct.unpack("!BB", sock.recv(2))
+                # Sicherstellen, dass die 2 Bytes für player_count und host_id da sind
+                header = recv_exact(sock, 2)
+                player_count, host_id = struct.unpack("!BB", header)
                 player_names.clear()
                 for _ in range(player_count):
-                    p_id = struct.unpack("!B", sock.recv(1))[0]
-                    name_length = struct.unpack("!B", sock.recv(1))[0]
-                    pname = sock.recv(name_length).decode()
+                    p_id = struct.unpack("!B", recv_exact(sock, 1))[0]
+                    name_length = struct.unpack("!B", recv_exact(sock, 1))[0]
+                    pname = recv_exact(sock, name_length).decode()
                     player_names[p_id] = pname
 
             elif packet_type == 2:
-                data_b = b""
-                while len(data_b) < 9:
-                    packet = sock.recv(9 - len(data_b))
-                    if not packet: return
-                    data_b += packet
+                # Positions-Update (1 Byte ID + 4 Bytes X + 4 Bytes Y = 9 Bytes)
+                data_b = recv_exact(sock, 9)
                 p_id, x, y = struct.unpack("!Bii", data_b)
                 other_players[p_id] = [x, y]
 
@@ -280,13 +304,12 @@ def receive_data(sock):
                 except: pass
 
             elif packet_type == 4:
-                disconnect_data = sock.recv(9)
-                if len(disconnect_data) == 9:
-                    p_id, x, y = struct.unpack("!Bii", disconnect_data)
-                    if p_id in other_players: del other_players[p_id]
+                disconnect_data = recv_exact(sock, 9)
+                p_id, x, y = struct.unpack("!Bii", disconnect_data)
+                if p_id in other_players: del other_players[p_id]
 
             elif packet_type == 5:
-                role_id = struct.unpack("!B", sock.recv(1))[0]
+                role_id = struct.unpack("!B", recv_exact(sock, 1))[0]
                 if role_id == 1:
                     my_player.role = "Imposter"
                     my_player.role_desc = "Eliminiere die Crew. Bleibe unentdeckt."
@@ -300,30 +323,27 @@ def receive_data(sock):
                     my_player.my_completed_tasks = []
 
             elif packet_type == 12: 
-                imposter_count = struct.unpack("!B", sock.recv(1))[0]
+                imposter_count = struct.unpack("!B", recv_exact(sock, 1))[0]
 
             elif packet_type == 21: 
-                global_task_progress, global_task_max = struct.unpack("!HH", sock.recv(4))
+                global_task_progress, global_task_max = struct.unpack("!HH", recv_exact(sock, 4))
 
             elif packet_type == 22: 
                 global imposter_reveal_ids
-                num_imps = struct.unpack("!B", sock.recv(1))[0]
+                num_imps = struct.unpack("!B", recv_exact(sock, 1))[0]
                 imposter_reveal_ids = []
                 for _ in range(num_imps):
-                    imposter_reveal_ids.append(struct.unpack("!B", sock.recv(1))[0])
+                    imposter_reveal_ids.append(struct.unpack("!B", recv_exact(sock, 1))[0])
                 state = "crew_win"
 
             elif packet_type == 23:
                 game_started = False
                 state = "lobby"
                 my_player.my_completed_tasks.clear()
-                
-                # NEU: Zugewiesene Aufgaben und globalen Fortschritt zurücksetzen
                 my_player.my_assigned_tasks.clear()
                 global_task_progress = 0
                 global_task_max = 0
-                
-                my_player.is_dead = False # Reset Tod
+                my_player.is_dead = False
                 dead_players.clear()
                 dead_bodies.clear()
                 my_player.rect.x = lobby_spawn_rects[my_id % len(lobby_spawn_rects)].x
@@ -331,9 +351,8 @@ def receive_data(sock):
                 try: sock.sendall(struct.pack('!Bii', 2, int(my_player.rect.x), int(my_player.rect.y)))
                 except: pass
                 
-            # NEU: Ein Spieler ist gestorben
             elif packet_type == 31:
-                dead_id = struct.unpack("!B", sock.recv(1))[0]
+                dead_id = struct.unpack("!B", recv_exact(sock, 1))[0]
                 dead_players.add(dead_id)
                 if dead_id == my_id:
                     my_player.is_dead = True
@@ -341,13 +360,40 @@ def receive_data(sock):
                 elif dead_id in other_players:
                     dead_bodies[dead_id] = (other_players[dead_id][0], other_players[dead_id][1])
 
-            # NEU: Imposter haben gewonnen
             elif packet_type == 32:
-                num_imps = struct.unpack("!B", sock.recv(1))[0]
+                num_imps = struct.unpack("!B", recv_exact(sock, 1))[0]
                 imposter_reveal_ids = []
                 for _ in range(num_imps):
-                    imposter_reveal_ids.append(struct.unpack("!B", sock.recv(1))[0])
+                    imposter_reveal_ids.append(struct.unpack("!B", recv_exact(sock, 1))[0])
                 state = "imposter_win"
+
+            elif packet_type == 40:
+                caller_id = struct.unpack("!B", recv_exact(sock, 1))[0]
+                state = "meeting"
+                meeting_phase = 0
+                voted_players.clear()
+                my_vote = None
+                if task_manager.active_task:
+                    task_manager.reset_active_task()
+                    task_manager.active_task = None
+                show_minimap = False
+
+            elif packet_type == 41:
+                voter_id = struct.unpack("!B", recv_exact(sock, 1))[0]
+                voted_players.add(voter_id)
+
+            elif packet_type == 43:
+                meeting_phase = 1
+
+            elif packet_type == 42:
+                ejected_player = struct.unpack("!B", recv_exact(sock, 1))[0]
+                ejected_timer = 180
+                state = "ejected_screen"
+                meeting_cooldown = 30 * 60
+                my_player.rect.x = spawnpoints[my_id].x
+                my_player.rect.y = spawnpoints[my_id].y
+                try: sock.sendall(struct.pack('!Bii', 2, int(my_player.rect.x), int(my_player.rect.y)))
+                except: pass
 
         except Exception as e:
             print("RECEIVE THREAD ERROR:", e)
@@ -553,7 +599,7 @@ minimap_bg = pygame.Surface((MINIMAP_WIDTH, MINIMAP_HEIGHT))
 minimap_bg.blit(pygame.transform.scale(floor_img, (MINIMAP_WIDTH, MINIMAP_HEIGHT)), (0, 0))
 minimap_bg.blit(pygame.transform.scale(walls_img, (MINIMAP_WIDTH, MINIMAP_HEIGHT)), (0, 0))
 
-hitboxes, vents, plants, tasks_hitboxes, mapwalls, spawnpoints = load_hitboxes(os.path.join(base_path, "Hitboxes.json"))
+hitboxes, vents, plants, tasks_hitboxes, mapwalls, spawnpoints, emergency_hitboxes = load_hitboxes(os.path.join(base_path, "Hitboxes.json"))
 
 for i, rect in enumerate(tasks_hitboxes):
     if i < len(TASK_TEMPLATES):
@@ -569,6 +615,13 @@ while running:
     dt = clock.tick(60) / 1000.0
     was_task_active = task_manager.active_task is not None
 
+    if meeting_cooldown > 0 and state == "game":
+        meeting_cooldown -= 1
+        # Update your meeting cooldown timer here based on delta time or frames
+        meeting_cooldown_timer = max(0, meeting_cooldown // 60) 
+
+    # --- ALL EVENTS MUST BE PROCESSED INSIDE THIS LOOP ---
+    # --- ALLE EVENTS MÜSSEN IN DIESER SCHLEIFE VERARBEITET WERDEN ---
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
@@ -602,7 +655,7 @@ while running:
 
         elif state == "game":
             if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_q:
+                if event.key == pygame.K_ESCAPE:
                     if task_manager.active_task:
                         task_aborted = True
                         task_manager.reset_active_task()
@@ -616,12 +669,18 @@ while running:
                 if event.key == pygame.K_m and task_manager.active_task is None:
                     show_minimap = not show_minimap
 
-                # NEU: Kill- & Task-Logik
                 if event.key == pygame.K_e and task_manager.active_task is None and not show_minimap:
+                    # 1. Emergency Meeting aufrufen
+                    in_emergency_zone = any(my_player.rect.colliderect(box) for box in emergency_hitboxes)
+                    if in_emergency_zone and not my_player.is_dead:
+                        if meeting_cooldown <= 0:
+                            try: sock.sendall(struct.pack("!B", 40))
+                            except: pass
+                    
+                    # 2. Imposter Angriff
                     if my_player.role == "Imposter" and not my_player.is_dead:
-                        # Kill Suche
                         closest_id = None
-                        closest_dist = 60 # Kill-Reichweite
+                        closest_dist = 60 
                         my_center = my_player.rect.center
                         for p_id, pos in other_players.items():
                             if p_id not in dead_players:
@@ -632,11 +691,11 @@ while running:
                                     closest_id = p_id
                         
                         if closest_id is not None:
-                            try: sock.sendall(struct.pack("!BB", 30, closest_id)) # Sende Kill-Paket
+                            try: sock.sendall(struct.pack("!BB", 30, closest_id)) 
                             except: pass
 
+                    # 3. Crewmate Tasks
                     elif my_player.role == "Crewmate":
-                        # Aufgaben erledigen (auch als Geist möglich)
                         for btn in task_buttons:
                             t_idx = btn["task_index"]
                             if t_idx not in my_player.my_assigned_tasks: continue
@@ -661,12 +720,49 @@ while running:
                         try: sock.sendall(struct.pack('!Bii', 2, int(my_player.rect.x), int(my_player.rect.y)))
                         except: pass
 
+        elif state in ["crew_win", "imposter_win"]:
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_RETURN:
+                if my_id == host_id:
+                    try: sock.sendall(struct.pack("!B", 23))
+                    except: pass
+
+        elif state == "meeting":
+            if event.type == pygame.MOUSEBUTTONDOWN and meeting_phase == 1 and my_vote is None and not my_player.is_dead:
+                skip_rect = pygame.Rect(WIDTH // 2 - 100, HEIGHT - 100, 200, 50)
+                if skip_rect.collidepoint(event.pos):
+                    my_vote = 255
+                    try: sock.sendall(struct.pack("!BB", 41, 255))
+                    except: pass
+
+                start_x = WIDTH // 2 - 320
+                start_y = 180
+                box_w, box_h = 200, 60
+                spacing_x, spacing_y = 20, 20
+
+                for i, p_id in enumerate(player_names.keys()):
+                    row = i // 3
+                    col = i % 3
+                    x = start_x + col * (box_w + spacing_x)
+                    y = start_y + row * (box_h + spacing_y)
+                    player_rect = pygame.Rect(x, y, box_w, box_h)
+                    
+                    # Man kann nicht für Tote stimmen und nicht für sich selbst (optional)
+                    if player_rect.collidepoint(event.pos) and p_id not in dead_players:
+                        my_vote = p_id
+                        try: sock.sendall(struct.pack("!BB", 41, p_id))
+                        except: pass
+
         task_manager.handle_event(event)
 
     if state == "game" and task_manager.active_task is None and not show_minimap and game_started:
         if my_player.move(pygame.key.get_pressed(), hitboxes):
             try: sock.sendall(struct.pack('!Bii', 2, int(my_player.rect.x), int(my_player.rect.y)))
             except: running = False
+        can_call_meeting = False
+        if not my_player.is_dead:
+            for box in emergency_hitboxes:
+                if my_player.rect.colliderect(box):
+                    can_call_meeting = True
 
     elif state == "lobby" and not game_started and my_id is not None:
         if my_player.move(pygame.key.get_pressed(), lobby_hitboxes):
@@ -768,6 +864,11 @@ while running:
         screen.fill((0, 0, 0))
         screen.blit(scaled_surface, ((WIDTH - scaled_size) // 2, (HEIGHT - scaled_size) // 2))
 
+        # HIER REINSETZEN: Erst blitten, wenn der Screen gecleart wurde!
+        if can_call_meeting:
+            meet_txt = proximity_font.render(f"Emergency Meeting [E] ({meeting_cooldown_timer}s)", True, (255, 255, 255))
+            screen.blit(meet_txt, (WIDTH // 2 - meet_txt.get_width() // 2, HEIGHT // 2 + 50))
+
         if already_done_timer > 0 and task_manager.active_task is None:
             already_done_timer -= 1
             msg_text = warning_font.render("Du hast diese Aufgabe bereits erledigt!", True, (255, 80, 80))
@@ -860,6 +961,79 @@ while running:
         if my_id == host_id: back_txt = small_font.render("Drücke ENTER, um alle in die Lobby zurückzuholen", True, (255, 255, 255))
         else: back_txt = small_font.render("Warte auf den Host für Lobby-Rückkehr...", True, (150, 150, 150))
         screen.blit(back_txt, (WIDTH // 2 - back_txt.get_width() // 2, HEIGHT // 2 + 100))
+
+    elif state == "meeting":
+        screen.fill((30, 30, 40))
+        title_str = "EMERGENCY MEETING" if meeting_phase == 0 else "VOTING PHASE"
+        title = menu_font.render(title_str, True, (255, 50, 50))
+        screen.blit(title, (WIDTH // 2 - title.get_width() // 2, 50))
+        
+        info = small_font.render("Diskutiere im Chat..." if meeting_phase == 0 else "Stimme jetzt ab!", True, (200, 200, 200))
+        screen.blit(info, (WIDTH // 2 - info.get_width() // 2, 100))
+
+        # --- NEU: Dynamisches Spieler-Grid zeichnen ---
+        start_x = WIDTH // 2 - 320
+        start_y = 180
+        box_w, box_h = 200, 60
+        spacing_x, spacing_y = 20, 20
+
+        for i, (p_id, p_name) in enumerate(player_names.items()):
+            row = i // 3
+            col = i % 3
+            x = start_x + col * (box_w + spacing_x)
+            y = start_y + row * (box_h + spacing_y)
+            player_rect = pygame.Rect(x, y, box_w, box_h)
+            
+            # Hintergrundfarbe bestimmen (Rot für tot, Grün für dich selbst, Grau für andere)
+            if p_id in dead_players:
+                bg_color = (70, 40, 40)
+            elif p_id == my_id:
+                bg_color = (40, 70, 40)
+            else:
+                bg_color = (50, 50, 60)
+                
+            pygame.draw.rect(screen, bg_color, player_rect, border_radius=8)
+            
+            # Rahmenfarbe: Grün leuchtend, wenn dieser Spieler bereits abgestimmt hat
+            border_color = (0, 255, 100) if p_id in voted_players else (255, 255, 255)
+            pygame.draw.rect(screen, border_color, player_rect, 2, border_radius=8)
+            
+            # Text (Name + Status) rendern
+            display_text = p_name + (" (TOT)" if p_id in dead_players else "")
+            text_surf = small_font.render(display_text, True, (255, 255, 255) if p_id not in dead_players else (150, 150, 150))
+            screen.blit(text_surf, (x + 10, y + (box_h // 2 - text_surf.get_height() // 2)))
+            
+            # Kleiner grüner Punkt, falls der Spieler fertig geresponsed hat
+            if p_id in voted_players:
+                pygame.draw.circle(screen, (0, 255, 100), (x + box_w - 20, y + box_h // 2), 6)
+
+        # Skip Button (Nur anzeigen, wenn wir in Voting-Phase sind und man lebt)
+        if meeting_phase == 1 and not my_player.is_dead:
+            skip_rect = pygame.Rect(WIDTH // 2 - 100, HEIGHT - 100, 200, 50)
+            pygame.draw.rect(screen, (100, 100, 100), skip_rect, border_radius=8)
+            skip_txt = small_font.render("Überspringen", True, (255, 255, 255))
+            screen.blit(skip_txt, (skip_rect.centerx - skip_txt.get_width() // 2, skip_rect.centery - skip_txt.get_height() // 2))
+            
+            if my_vote is not None:
+                vote_txt = small_font.render("Abgestimmt!", True, (0, 255, 100))
+                screen.blit(vote_txt, (WIDTH // 2 - vote_txt.get_width() // 2, HEIGHT - 30))
+
+    elif state == "ejected_screen":
+        screen.fill((10, 10, 15))
+        if ejected_player == 255:
+            msg = "Niemand wurde rausgeworfen. (Gleichstand / Übersprungen)"
+        else:
+            e_name = player_names.get(ejected_player, f"Spieler {ejected_player}")
+            msg = f"{e_name} wurde rausgeworfen."
+            
+        txt = menu_font.render(msg, True, (255, 255, 255))
+        screen.blit(txt, (WIDTH // 2 - txt.get_width() // 2, HEIGHT // 2))
+        
+        ejected_timer -= 1
+        if ejected_timer <= 0:
+            if my_id == ejected_player:
+                my_player.is_dead = True
+            state = "game"
 
     pygame.display.update()
 

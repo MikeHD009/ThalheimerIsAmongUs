@@ -769,16 +769,16 @@
          "name":"EmergencyMeeting",
          "objects":[
                 {
-                 "height":76,
+                 "height":113,
                  "id":569,
                  "name":"",
                  "opacity":1,
                  "rotation":0,
                  "type":"",
                  "visible":true,
-                 "width":96.25,
-                 "x":600,
-                 "y":932
+                 "width":145,
+                 "x":574,
+                 "y":913
                 }],
          "opacity":1,
          "type":"objectgroup",
