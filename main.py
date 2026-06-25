@@ -157,9 +157,9 @@ class TextInput:
 # MAP & HITBOX LOADER
 # =========================
 def load_hitboxes(filepath):
-    hitboxes, vents, plants, tasks_hitboxes, mapwalls, spawnpoints = [], [], [], [], [], []
+    hitboxes, vents, plants, tasks_hitboxes, mapwalls, spawnpoints, emergency_hitboxes = [], [], [], [], [], [], []
     if not os.path.exists(filepath):
-        return hitboxes, vents, plants, tasks_hitboxes, mapwalls, spawnpoints
+        return hitboxes, vents, plants, tasks_hitboxes, mapwalls, spawnpoints, emergency_hitboxes
     
     with open(filepath, "r", encoding="utf-8-sig") as f:
         map_data = json.load(f)
@@ -191,20 +191,26 @@ def load_hitboxes(filepath):
             elif "data" in layer:
                 for i, t_id in enumerate(layer["data"]):
                     if t_id != 0: tasks_hitboxes.append(pygame.Rect((i % map_width) * TILE_SIZE, (i // map_width) * TILE_SIZE, TILE_SIZE, TILE_SIZE))
-        if name in ["Hitbox", "Hitbox"]:
+        elif name in ["Hitbox", "Hitbox"]:
             if "objects" in layer:
                 for obj in layer["objects"]: mapwalls.append(pygame.Rect(obj["x"], obj["y"], obj["width"], obj["height"]))
             elif "data" in layer:
                 for i, t_id in enumerate(layer["data"]):
                     if t_id != 0: mapwalls.append(pygame.Rect((i % map_width) * TILE_SIZE, (i // map_width) * TILE_SIZE, TILE_SIZE, TILE_SIZE))
-        if name in ["Spawnpoints", "Spawnpoints"]:
+        elif name in ["Spawnpoints", "Spawnpoints"]:
             if "objects" in layer:
                 for obj in layer["objects"]: spawnpoints.append(pygame.Rect(obj["x"], obj["y"], obj["width"], obj["height"]))
             elif "data" in layer:
                 for i, t_id in enumerate(layer["data"]):
                     if t_id != 0: spawnpoints.append(pygame.Rect((i % map_width) * TILE_SIZE, (i // map_width) * TILE_SIZE, TILE_SIZE, TILE_SIZE))
+        elif name == "EmergencyMeeting":
+            if "objects" in layer:
+                for obj in layer["objects"]: emergency_hitboxes.append(pygame.Rect(obj["x"], obj["y"], obj["width"], obj["height"]))
+            elif "data" in layer:
+                for i, t_id in enumerate(layer["data"]):
+                    if t_id != 0: emergency_hitboxes.append(pygame.Rect((i % map_width) * TILE_SIZE, (i // map_width) * TILE_SIZE, TILE_SIZE, TILE_SIZE))
                         
-    return hitboxes, vents, plants, tasks_hitboxes, mapwalls, spawnpoints
+    return hitboxes, vents, plants, tasks_hitboxes, mapwalls, spawnpoints, emergency_hitboxes
 
 def get_current_vent(player, vents):
     for vent in vents:
@@ -352,6 +358,36 @@ def receive_data(sock):
                     imposter_reveal_ids.append(struct.unpack("!B", sock.recv(1))[0])
                 state = "imposter_win"
 
+            elif packet_type == 40:
+                meeting_active = True
+                meeting_timer = 30.0
+                has_voted = False
+                player_votes.clear()
+                if task_manager.active_task:
+                    task_manager.reset_active_task()
+                    task_manager.active_task = None
+                show_minimap = False
+
+            elif packet_type == 41:
+                voter_id, target_id = struct.unpack("!BB", sock.recv(2))
+                player_votes[voter_id] = target_id
+
+            elif packet_type == 43:
+                meeting_active = False
+                meeting_cooldown = 30.0
+                # Alle Spieler auf fixe Spawnpoints zurücksetzen
+                if my_id is not None and my_id < len(spawnpoints):
+                    my_player.rect.x = spawnpoints[my_id].x
+                    my_player.rect.y = spawnpoints[my_id].y
+                try: sock.sendall(struct.pack('!Bii', 2, int(my_player.rect.x), int(my_player.rect.y)))
+                except: pass
+                
+            elif packet_type == 23:  # Erweitere den bestehenden Reset
+                game_started = False
+                state = "lobby"
+                meeting_active = False
+                meeting_cooldown = 0.0
+
         except Exception as e:
             print("RECEIVE THREAD ERROR:", e)
             break
@@ -414,6 +450,66 @@ TASK_TEMPLATES = [
     {"type": "trash_bin", "name": "Müll wegbringen"}, {"type": "pipe_leak", "name": "Rohrbruch dichten"},
 ]
 task_buttons = []
+
+def draw_meeting():
+    # Dunkler Overlay-Hintergrund (wie die Map)
+    overlay = pygame.Surface((WIDTH, HEIGHT))
+    overlay.set_alpha(230)
+    overlay.fill((15, 20, 30))
+    screen.blit(overlay, (0, 0))
+    
+    title_txt = menu_font.render(f"NOTFALL-MEETING ({int(meeting_timer)}s)", True, (255, 255, 255))
+    screen.blit(title_txt, (WIDTH // 2 - title_txt.get_width() // 2, 40))
+    
+    box_w, box_h = 280, 60
+    start_x = (WIDTH - (3 * (box_w + 20))) // 2
+    start_y = 120
+    
+    all_p_ids = sorted(list(player_names.keys()))
+    for idx, p_id in enumerate(all_p_ids):
+        col = idx % 3
+        row = idx // 3
+        bx = start_x + col * (box_w + 20)
+        by = start_y + row * (box_h + 20)
+        rect = pygame.Rect(bx, by, box_w, box_h)
+        
+        is_p_dead = p_id in dead_players
+        bg_color = (25, 25, 30) if is_p_dead else (40, 45, 55)
+        
+        pygame.draw.rect(screen, bg_color, rect, border_radius=8)
+        border_color = (0, 255, 255) if p_id == my_id else (100, 100, 110)
+        pygame.draw.rect(screen, border_color, rect, 2, border_radius=8)
+        
+        # Spielerbild links (tot = ausgegraut)
+        p_img = player_images.get(p_id % len(player_images))
+        if p_img:
+            img_copy = p_img.copy()
+            if is_p_dead:
+                img_copy.fill((80, 80, 80, 255), special_flags=pygame.BLEND_RGBA_MULT)
+            screen.blit(img_copy, (bx + 10, by + (box_h - PLAYER_SIZE) // 2))
+            
+        # Name rechts daneben
+        name_color = (120, 120, 120) if is_p_dead else (255, 255, 255)
+        p_name = player_names.get(p_id, f"Player {p_id}")
+        name_txt = name_font.render(p_name, True, name_color)
+        screen.blit(name_txt, (bx + 15 + PLAYER_SIZE, by + (box_h - name_txt.get_height()) // 2))
+        
+        # Häkchen, wenn der Spieler bereits gewählt hat
+        if p_id in player_votes:
+            voted_marker = name_font.render("✔", True, (0, 255, 0))
+            screen.blit(voted_marker, (bx + box_w - 25, by + (box_h - voted_marker.get_height()) // 2))
+            
+    # Skip-Button am unteren Rand
+    skip_rect = pygame.Rect(WIDTH // 2 - 150, HEIGHT - 100, 300, 50)
+    pygame.draw.rect(screen, (60, 65, 75), skip_rect, border_radius=8)
+    pygame.draw.rect(screen, (200, 200, 200), skip_rect, 2, border_radius=8)
+    skip_txt = name_font.render("VOTING ÜBERSPRINGEN", True, (255, 255, 255))
+    screen.blit(skip_txt, (skip_rect.centerx - skip_txt.get_width() // 2, skip_rect.centery - skip_txt.get_height() // 2))
+    
+    skip_voters = sum(1 for v in player_votes.values() if v == 255)
+    if skip_voters > 0:
+        sv_txt = name_font.render(f"Stimmen: {skip_voters}", True, (0, 255, 0))
+        screen.blit(sv_txt, (skip_rect.right + 15, skip_rect.centery - sv_txt.get_height() // 2))
 
 def draw_task_buttons(surface, buttons, player_obj, camera_x, camera_y):
     for btn in buttons:
@@ -556,7 +652,7 @@ minimap_bg = pygame.Surface((MINIMAP_WIDTH, MINIMAP_HEIGHT))
 minimap_bg.blit(pygame.transform.scale(floor_img, (MINIMAP_WIDTH, MINIMAP_HEIGHT)), (0, 0))
 minimap_bg.blit(pygame.transform.scale(walls_img, (MINIMAP_WIDTH, MINIMAP_HEIGHT)), (0, 0))
 
-hitboxes, vents, plants, tasks_hitboxes, mapwalls, spawnpoints = load_hitboxes(os.path.join(base_path, "Hitboxes.json"))
+hitboxes, vents, plants, tasks_hitboxes, mapwalls, spawnpoints, emergency_hitboxes = load_hitboxes(os.path.join(base_path, "Hitboxes.json"))
 
 for i, rect in enumerate(tasks_hitboxes):
     if i < len(TASK_TEMPLATES):
@@ -565,6 +661,11 @@ for i, rect in enumerate(tasks_hitboxes):
 # =========================
 # HAUPTSCHLEIFE
 # =========================
+meeting_active = False
+meeting_cooldown = 0.0
+meeting_timer = 30.0
+has_voted = False
+player_votes = {}
 running = True
 show_minimap = False  
 
@@ -604,6 +705,40 @@ while running:
                         except: pass
 
         elif state == "game":
+            if meeting_active:
+                meeting_timer -= dt
+                if meeting_timer < 0: meeting_timer = 0
+                else:
+                    if meeting_cooldown > 0: meeting_cooldown -= dt
+            if meeting_active:
+                if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    if not my_player.is_dead and not has_voted:
+                        box_w, box_h = 280, 60
+                        start_x = (WIDTH - (3 * (box_w + 20))) // 2
+                        start_y = 120
+                        all_p_ids = sorted(list(player_names.keys()))
+                        
+                        clicked_target = None
+                        for idx, p_id in enumerate(all_p_ids):
+                            if p_id in dead_players: continue
+                            col = idx % 3
+                            row = idx // 3
+                            bx = start_x + col * (box_w + 20)
+                            by = start_y + row * (box_h + 20)
+                            rect = pygame.Rect(bx, by, box_w, box_h)
+                            if rect.collidepoint(event.pos):
+                                clicked_target = p_id
+                                break
+                                
+                        skip_rect = pygame.Rect(WIDTH // 2 - 150, HEIGHT - 100, 300, 50)
+                        if skip_rect.collidepoint(event.pos):
+                            clicked_target = 255  # 255 repräsentiert Skip
+                            
+                        if clicked_target is not None:
+                            try:
+                                sock.sendall(struct.pack("!BB", 41, clicked_target))
+                                has_voted = True
+                            except: pass
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_q:
                     if task_manager.active_task:
@@ -637,7 +772,16 @@ while running:
 
                 # Interaktions-Logik (Blockiert, wenn man im Vent abgetaucht ist)
                 if event.key == pygame.K_e and task_manager.active_task is None and not show_minimap and not my_player.is_venting:
-                    if my_player.role == "Imposter" and not my_player.is_dead:
+                    at_meeting_box = False
+                    for box in emergency_hitboxes:
+                        if my_player.rect.colliderect(box):
+                            at_meeting_box = True
+                            break
+                    
+                    if at_meeting_box and meeting_cooldown <= 0 and not my_player.is_dead:
+                        try: sock.sendall(struct.pack("!B", 40))
+                        except: pass
+                    elif my_player.role == "Imposter" and not my_player.is_dead:
                         # Kill Suche
                         closest_id = None
                         closest_dist = 60 # Kill-Reichweite
@@ -698,7 +842,7 @@ while running:
 
     if state == "game" and task_manager.active_task is None and not show_minimap and game_started:
         # NEU: Normale WASD Bewegung blockieren, falls man im Vent sitzt
-        if not my_player.is_venting:
+        if not my_player.is_venting and not meeting_active:
             if my_player.move(pygame.key.get_pressed(), hitboxes):
                 try: sock.sendall(struct.pack('!Bii', 2, int(my_player.rect.x), int(my_player.rect.y)))
                 except: running = False
@@ -872,6 +1016,9 @@ while running:
             p_col = (150, 50, 50) if my_player.is_dead else (255, 30, 30)
             pygame.draw.circle(screen, p_col, (player_mm_x, player_mm_y), 8)
             pygame.draw.circle(screen, (255, 255, 255), (player_mm_x, player_mm_y), 8, 2)
+
+        if meeting_active:
+            draw_meeting()
 
     elif state in ["crew_win", "imposter_win"]:
         screen.fill((20, 25, 30))

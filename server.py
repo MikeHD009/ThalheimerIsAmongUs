@@ -21,6 +21,10 @@ game_active = False  # NEU: Um Status-Prüfungen nur im Spiel auszuführen
 total_crew_tasks = 0
 completed_crew_tasks = 0
 
+in_meeting = False
+meeting_votes = {}
+meeting_timer_obj = None
+
 def send_lobby_update():
     player_count = len(clients)
     for pid, conn in list(clients.items()):
@@ -159,6 +163,67 @@ def handle_client(conn, player_id):
                 x, y = struct.unpack("!ii", buffer)
                 player_positions[player_id] = (x, y)
                 broadcast_to_all(struct.pack("!BBii", 2, player_id, x, y), exclude_id=player_id)
+
+            elif packet == 40:
+                global in_meeting, meeting_votes, meeting_timer_obj
+                if game_active and not in_meeting and player_id not in dead_players:
+                    in_meeting = True
+                    meeting_votes = {}
+                    broadcast_to_all(struct.pack("!B", 40))
+                    
+                    # 30-Sekunden Abstimm-Timer starten
+                    def end_meeting():
+                        global in_meeting
+                        if not in_meeting: return
+                        
+                        tally = {}
+                        skip_count = 0
+                        
+                        # Nur lebende Stimmen zählen
+                        for v_id, t_id in list(meeting_votes.items()):
+                            if v_id in clients and v_id not in dead_players:
+                                if t_id == 255:
+                                    skip_count += 1
+                                elif t_id in clients and t_id not in dead_players:
+                                    tally[t_id] = tally.get(t_id, 0) + 1
+                                    
+                        # Auswertung wer fliegt
+                        max_votes = skip_count
+                        evicted_id = 255
+                        tie = False
+                        
+                        for t_id, count in tally.items():
+                            if count > max_votes:
+                                max_votes = count
+                                evicted_id = t_id
+                                tie = False
+                            elif count == max_votes:
+                                tie = True
+                                
+                        # Wenn kein Gleichstand und nicht skipped -> Spieler stirbt
+                        if not tie and evicted_id != 255:
+                            dead_players.add(evicted_id)
+                            broadcast_to_all(struct.pack("!BB", 31, evicted_id))
+                            check_win_conditions()
+                            
+                        in_meeting = False
+                        broadcast_to_all(struct.pack("!B", 43))
+                        
+                    meeting_timer_obj = threading.Timer(30.0, end_meeting)
+                    meeting_timer_obj.start()
+
+            elif packet == 41:
+                target_id = struct.unpack("!B", conn.recv(1))[0]
+                if in_meeting and player_id not in dead_players:
+                    meeting_votes[player_id] = target_id
+                    # An alle senden, damit Häkchen gezeichnet werden
+                    broadcast_to_all(struct.pack("!BBB", 41, player_id, target_id))
+
+            # Beim Zurücksetzen der Lobby (Paket 23) oder Match-Start (99) Timer abbrechen:
+            elif packet == 23 or packet == 99:
+                if meeting_timer_obj:
+                    meeting_timer_obj.cancel()
+                in_meeting = False
 
     except Exception as e:
         print(f"[SERVER ERROR] Player {player_id}: {e}")
