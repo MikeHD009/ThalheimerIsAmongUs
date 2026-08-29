@@ -8,6 +8,7 @@ import sys
 import os
 
 import tasks
+from Meeting import *
 
 # =========================
 # EINSTELLUNGEN & KONSTANTEN
@@ -658,6 +659,8 @@ for i, rect in enumerate(tasks_hitboxes):
     if i < len(TASK_TEMPLATES):
         task_buttons.append({"rect": rect, "type": TASK_TEMPLATES[i]["type"], "task_index": i, "name": TASK_TEMPLATES[i]["name"]})
 
+meeting_system = MeetingSystem(screen, state)
+
 # =========================
 # HAUPTSCHLEIFE
 # =========================
@@ -705,40 +708,6 @@ while running:
                         except: pass
 
         elif state == "game":
-            if meeting_active:
-                meeting_timer -= dt
-                if meeting_timer < 0: meeting_timer = 0
-                else:
-                    if meeting_cooldown > 0: meeting_cooldown -= dt
-            if meeting_active:
-                if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                    if not my_player.is_dead and not has_voted:
-                        box_w, box_h = 280, 60
-                        start_x = (WIDTH - (3 * (box_w + 20))) // 2
-                        start_y = 120
-                        all_p_ids = sorted(list(player_names.keys()))
-                        
-                        clicked_target = None
-                        for idx, p_id in enumerate(all_p_ids):
-                            if p_id in dead_players: continue
-                            col = idx % 3
-                            row = idx // 3
-                            bx = start_x + col * (box_w + 20)
-                            by = start_y + row * (box_h + 20)
-                            rect = pygame.Rect(bx, by, box_w, box_h)
-                            if rect.collidepoint(event.pos):
-                                clicked_target = p_id
-                                break
-                                
-                        skip_rect = pygame.Rect(WIDTH // 2 - 150, HEIGHT - 100, 300, 50)
-                        if skip_rect.collidepoint(event.pos):
-                            clicked_target = 255  # 255 repräsentiert Skip
-                            
-                        if clicked_target is not None:
-                            try:
-                                sock.sendall(struct.pack("!BB", 41, clicked_target))
-                                has_voted = True
-                            except: pass
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_q:
                     if task_manager.active_task:
@@ -838,6 +807,19 @@ while running:
                             try: sock.sendall(struct.pack('!Bii', 2, int(my_player.rect.x), int(my_player.rect.y)))
                             except: pass
 
+        if meeting_system.is_active:
+            meeting_system.handle_event(event)
+        else:
+            # 2. Wenn Meeting NICHT aktiv ist, erlaube normales Gameplay
+            if event.type == pygame.KEYDOWN:
+                
+                # Spieler drückt E, um Leiche zu melden
+                if event.key == pygame.K_e:
+                    for body in state.bodies:
+                        if my_player.rect.colliderect(body.rect): # Befindet man sich in der Nähe?
+                            meeting_system.trigger_meeting(my_player.name, reason="BODY_REPORTED")
+                            break
+
         task_manager.handle_event(event)
 
     if state == "game" and task_manager.active_task is None and not show_minimap and game_started:
@@ -857,6 +839,12 @@ while running:
                 if my_id == host_id:
                     try: sock.sendall(struct.pack("!B", 23))
                     except: pass
+
+    if meeting_system.is_active:
+        meeting_system.update()
+    else:
+        # Normales Spiel update (Bewegung, Tasks etc.)
+        pass
 
     # --- RENDERING ---
     if state == "menu":
@@ -1039,6 +1027,9 @@ while running:
         if my_id == host_id: back_txt = small_font.render("Drücke ENTER, um alle in die Lobby zurückzuholen", True, (255, 255, 255))
         else: back_txt = small_font.render("Warte auf den Host für Lobby-Rückkehr...", True, (150, 150, 150))
         screen.blit(back_txt, (WIDTH // 2 - back_txt.get_width() // 2, HEIGHT // 2 + 100))
+
+    if meeting_system.is_active:
+        meeting_system.draw()
 
     pygame.display.update()
 
