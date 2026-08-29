@@ -885,7 +885,7 @@ while running:
             distance = math.hypot(my_center[0] - body_center[0], my_center[1] - body_center[1])
             
             if distance <= VISION_RADIUS:
-                if has_line_of_sight(my_center, body_center, mapwalls):
+                if has_line_of_sight(my_center, body_center, hitboxes):
                     internal_surface.blit(b_img, (dx - camera_x, dy - camera_y))
 
         # Andere Spieler zeichnen
@@ -906,7 +906,7 @@ while running:
             is_visible = False
             
             if distance <= VISION_RADIUS:
-                if has_line_of_sight(my_center, enemy_center, mapwalls):
+                if has_line_of_sight(my_center, enemy_center, hitboxes):
                     is_visible = True
                     
             if p_id not in player_visibility: player_visibility[p_id] = 0.0
