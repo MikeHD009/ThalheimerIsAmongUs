@@ -812,10 +812,9 @@ while running:
         else:
             # 2. Wenn Meeting NICHT aktiv ist, erlaube normales Gameplay
             if event.type == pygame.KEYDOWN:
-                
                 # Spieler drückt E, um Leiche zu melden
                 if event.key == pygame.K_e:
-                    for body in state.bodies:
+                    for body in dead_bodies.items():
                         if my_player.rect.colliderect(body.rect): # Befindet man sich in der Nähe?
                             meeting_system.trigger_meeting(my_player.name, reason="BODY_REPORTED")
                             break
