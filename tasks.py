@@ -3981,7 +3981,7 @@ class PencilCaseTask:
         if event.type == pygame.MOUSEBUTTONDOWN:
             mouse_pos = pygame.mouse.get_pos()
 
-            # reversed(), damit man das oberste Item greift, wenn sie übereinander liegen
+            # reversed(), damit man das oberste Item greift, falls sie überlappen
             for item in reversed(self.items):
                 if item["rect"].collidepoint(mouse_pos):
                     self.selected_item = item
@@ -4007,15 +4007,18 @@ class PencilCaseTask:
                 self.check_finished()
 
     def check_finished(self):
-        # Prüfen, ob alle Gegenstände komplett im Federmäppchen liegen
-        all_inside = True
+        """
+        Prüft, ob alle Gegenstände vollständig im Federmäppchen liegen.
+        """
+        all_packed = True
 
         for item in self.items:
+            # .contains() prüft, ob das Item-Rechteck komplett im Mäppchen-Rechteck liegt
             if not self.pencil_case.contains(item["rect"]):
-                all_inside = False
+                all_packed = False
                 break
 
-        if all_inside:
+        if all_packed:
             self.finished = True
 
     def is_finished(self):
