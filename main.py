@@ -182,7 +182,7 @@ def load_hitboxes(filepath):
         elif name == "PlantTeleport":
             if "objects" in layer:
                 for obj in layer["objects"]: plants.append(pygame.Rect(obj["x"], obj["y"], obj["width"], obj["height"]))
-            elif "data" in layer:.
+            elif "data" in layer:
                 for i, t_id in enumerate(layer["data"]):
                     if t_id != 0: plants.append(pygame.Rect((i % map_width) * TILE_SIZE, (i // map_width) * TILE_SIZE, TILE_SIZE, TILE_SIZE))
         elif name in ["Tasks", "Tasks"]:
