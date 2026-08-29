@@ -173,6 +173,12 @@ def load_hitboxes(filepath):
             elif "data" in layer:
                 for i, t_id in enumerate(layer["data"]):
                     if t_id != 0: hitboxes.append(pygame.Rect((i % map_width) * TILE_SIZE, (i // map_width) * TILE_SIZE, TILE_SIZE, TILE_SIZE))
+        if name in ["Hitbox", "Hitbox"]:
+            if "objects" in layer:
+                for obj in layer["objects"]: mapwalls.append(pygame.Rect(obj["x"], obj["y"], obj["width"], obj["height"]))
+            elif "data" in layer:
+                for i, t_id in enumerate(layer["data"]):
+                    if t_id != 0: mapwalls.append(pygame.Rect((i % map_width) * TILE_SIZE, (i // map_width) * TILE_SIZE, TILE_SIZE, TILE_SIZE))
         elif name == "VentsHitbox":
             if "objects" in layer:
                 for obj in layer["objects"]: vents.append(pygame.Rect(obj["x"], obj["y"], obj["width"], obj["height"]))
@@ -191,12 +197,6 @@ def load_hitboxes(filepath):
             elif "data" in layer:
                 for i, t_id in enumerate(layer["data"]):
                     if t_id != 0: tasks_hitboxes.append(pygame.Rect((i % map_width) * TILE_SIZE, (i // map_width) * TILE_SIZE, TILE_SIZE, TILE_SIZE))
-        elif name in ["Hitbox", "Hitbox"]:
-            if "objects" in layer:
-                for obj in layer["objects"]: mapwalls.append(pygame.Rect(obj["x"], obj["y"], obj["width"], obj["height"]))
-            elif "data" in layer:
-                for i, t_id in enumerate(layer["data"]):
-                    if t_id != 0: mapwalls.append(pygame.Rect((i % map_width) * TILE_SIZE, (i // map_width) * TILE_SIZE, TILE_SIZE, TILE_SIZE))
         elif name in ["Spawnpoints", "Spawnpoints"]:
             if "objects" in layer:
                 for obj in layer["objects"]: spawnpoints.append(pygame.Rect(obj["x"], obj["y"], obj["width"], obj["height"]))
@@ -885,7 +885,7 @@ while running:
             distance = math.hypot(my_center[0] - body_center[0], my_center[1] - body_center[1])
             
             if distance <= VISION_RADIUS:
-                if has_line_of_sight(my_center, body_center, hitboxes):
+                if has_line_of_sight(my_center, body_center, mapwalls):
                     internal_surface.blit(b_img, (dx - camera_x, dy - camera_y))
 
         # Andere Spieler zeichnen
@@ -906,7 +906,7 @@ while running:
             is_visible = False
             
             if distance <= VISION_RADIUS:
-                if has_line_of_sight(my_center, enemy_center, hitboxes):
+                if has_line_of_sight(my_center, enemy_center, mapwalls):
                     is_visible = True
                     
             if p_id not in player_visibility: player_visibility[p_id] = 0.0
