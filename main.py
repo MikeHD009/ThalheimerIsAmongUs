@@ -8,7 +8,8 @@ import sys
 import os
 
 import tasks
-from Meeting import *
+# HINWEIS: MeetingSystem aus Meeting.py wird nicht mehr eingebunden, siehe Kommentar weiter unten
+# bei der Initialisierung der Meeting-Variablen.
 
 # =========================
 # EINSTELLUNGEN & KONSTANTEN
@@ -256,6 +257,12 @@ def setup_socket(s):
 def receive_data(sock):
     global other_players, player_names, player_count, host_id, game_started, state
     global imposter_count, intro_timer, global_task_progress, global_task_max, dead_players, dead_bodies
+    # WICHTIG: Diese fehlten bisher -> ohne "global" wurden meeting_active/meeting_timer/has_voted/
+    # meeting_cooldown nur LOKAL in dieser Funktion verändert und die Hauptschleife hat davon nie etwas gesehen.
+    # Dadurch ist beim Empfang von Paket 40/43 nach außen hin scheinbar nichts passiert.
+    global meeting_active, meeting_timer, has_voted, meeting_cooldown, meeting_caller_id, meeting_reason
+    # show_minimap hatte denselben Fehler: wurde bei Meeting-Start lokal statt global auf False gesetzt
+    global show_minimap
 
     while True:
         try:
@@ -360,8 +367,11 @@ def receive_data(sock):
                 state = "imposter_win"
 
             elif packet_type == 40:
+                caller_id, reason = struct.unpack("!BB", sock.recv(2))
                 meeting_active = True
                 meeting_timer = 30.0
+                meeting_caller_id = caller_id
+                meeting_reason = reason
                 has_voted = False
                 player_votes.clear()
                 if task_manager.active_task:
@@ -452,28 +462,43 @@ TASK_TEMPLATES = [
 ]
 task_buttons = []
 
-def draw_meeting():
-    # Dunkler Overlay-Hintergrund (wie die Map)
-    overlay = pygame.Surface((WIDTH, HEIGHT))
-    overlay.set_alpha(230)
-    overlay.fill((15, 20, 30))
-    screen.blit(overlay, (0, 0))
-    
-    title_txt = menu_font.render(f"NOTFALL-MEETING ({int(meeting_timer)}s)", True, (255, 255, 255))
-    screen.blit(title_txt, (WIDTH // 2 - title_txt.get_width() // 2, 40))
-    
+def get_meeting_layout():
+    """Liefert Spieler-Boxen + Skip-Button für die Meeting-Ansicht.
+    Wird sowohl von draw_meeting() (Zeichnen) als auch vom Mausklick-Handler
+    (Abstimmen) benutzt, damit beide garantiert dieselben Koordinaten verwenden."""
     box_w, box_h = 280, 60
     start_x = (WIDTH - (3 * (box_w + 20))) // 2
     start_y = 120
-    
+
+    boxes = []
     all_p_ids = sorted(list(player_names.keys()))
     for idx, p_id in enumerate(all_p_ids):
         col = idx % 3
         row = idx // 3
         bx = start_x + col * (box_w + 20)
         by = start_y + row * (box_h + 20)
-        rect = pygame.Rect(bx, by, box_w, box_h)
-        
+        boxes.append((p_id, pygame.Rect(bx, by, box_w, box_h)))
+
+    skip_rect = pygame.Rect(WIDTH // 2 - 150, HEIGHT - 100, 300, 50)
+    return boxes, skip_rect
+
+def draw_meeting():
+    # Dunkler Overlay-Hintergrund (wie die Map)
+    overlay = pygame.Surface((WIDTH, HEIGHT))
+    overlay.set_alpha(230)
+    overlay.fill((15, 20, 30))
+    screen.blit(overlay, (0, 0))
+
+    caller_name = player_names.get(meeting_caller_id, f"Spieler {meeting_caller_id}")
+    if meeting_reason == MEETING_REASON_BODY:
+        title_str = f"{caller_name} hat eine Leiche gemeldet! ({int(meeting_timer)}s)"
+    else:
+        title_str = f"{caller_name} hat ein Meeting einberufen! ({int(meeting_timer)}s)"
+    title_txt = menu_font.render(title_str, True, (255, 255, 255))
+    screen.blit(title_txt, (WIDTH // 2 - title_txt.get_width() // 2, 40))
+
+    boxes, skip_rect = get_meeting_layout()
+    for p_id, rect in boxes:
         is_p_dead = p_id in dead_players
         bg_color = (25, 25, 30) if is_p_dead else (40, 45, 55)
         
@@ -487,21 +512,20 @@ def draw_meeting():
             img_copy = p_img.copy()
             if is_p_dead:
                 img_copy.fill((80, 80, 80, 255), special_flags=pygame.BLEND_RGBA_MULT)
-            screen.blit(img_copy, (bx + 10, by + (box_h - PLAYER_SIZE) // 2))
+            screen.blit(img_copy, (rect.x + 10, rect.y + (rect.height - PLAYER_SIZE) // 2))
             
         # Name rechts daneben
         name_color = (120, 120, 120) if is_p_dead else (255, 255, 255)
         p_name = player_names.get(p_id, f"Player {p_id}")
         name_txt = name_font.render(p_name, True, name_color)
-        screen.blit(name_txt, (bx + 15 + PLAYER_SIZE, by + (box_h - name_txt.get_height()) // 2))
+        screen.blit(name_txt, (rect.x + 15 + PLAYER_SIZE, rect.y + (rect.height - name_txt.get_height()) // 2))
         
         # Häkchen, wenn der Spieler bereits gewählt hat
         if p_id in player_votes:
             voted_marker = name_font.render("✔", True, (0, 255, 0))
-            screen.blit(voted_marker, (bx + box_w - 25, by + (box_h - voted_marker.get_height()) // 2))
+            screen.blit(voted_marker, (rect.x + rect.width - 25, rect.y + (rect.height - voted_marker.get_height()) // 2))
             
     # Skip-Button am unteren Rand
-    skip_rect = pygame.Rect(WIDTH // 2 - 150, HEIGHT - 100, 300, 50)
     pygame.draw.rect(screen, (60, 65, 75), skip_rect, border_radius=8)
     pygame.draw.rect(screen, (200, 200, 200), skip_rect, 2, border_radius=8)
     skip_txt = name_font.render("VOTING ÜBERSPRINGEN", True, (255, 255, 255))
@@ -659,22 +683,37 @@ for i, rect in enumerate(tasks_hitboxes):
     if i < len(TASK_TEMPLATES):
         task_buttons.append({"rect": rect, "type": TASK_TEMPLATES[i]["type"], "task_index": i, "name": TASK_TEMPLATES[i]["name"]})
 
-meeting_system = MeetingSystem(screen, state)
+# HINWEIS: Das alte MeetingSystem aus Meeting.py wird hier bewusst NICHT mehr verwendet.
+# Es erwartet ein "game_state"-Objekt mit .players/.bodies (echte Spieler-Objekte), das es in
+# diesem Netzwerk-Code gar nicht gibt (andere Spieler sind nur Positions-Dicts + IDs), und lief
+# außerdem komplett lokal ohne Server-Sync. Die Datei bleibt unverändert liegen, falls ihr Teile
+# davon (z.B. die Chat-Idee) später in das unten stehende, server-synchronisierte System einbauen wollt.
 
 # =========================
 # HAUPTSCHLEIFE
 # =========================
+MEETING_REASON_BUTTON = 0
+MEETING_REASON_BODY = 1
+
 meeting_active = False
 meeting_cooldown = 0.0
 meeting_timer = 30.0
 has_voted = False
 player_votes = {}
+meeting_caller_id = None
+meeting_reason = MEETING_REASON_BUTTON
 running = True
 show_minimap = False  
 
 while running:
     dt = clock.tick(60) / 1000.0
     was_task_active = task_manager.active_task is not None
+
+    # Meeting-Timer & Notfallknopf-Cooldown laufend runterzählen (sonst bleibt die Anzeige stehen)
+    if meeting_active:
+        meeting_timer = max(0.0, meeting_timer - dt)
+    if meeting_cooldown > 0:
+        meeting_cooldown = max(0.0, meeting_cooldown - dt)
 
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
@@ -739,16 +778,29 @@ while running:
                             try: sock.sendall(struct.pack('!Bii', 2, -2000, -2000))
                             except: pass
 
-                # Interaktions-Logik (Blockiert, wenn man im Vent abgetaucht ist)
-                if event.key == pygame.K_e and task_manager.active_task is None and not show_minimap and not my_player.is_venting:
+                # Interaktions-Logik (Blockiert, wenn man im Vent abgetaucht ist oder gerade ein Meeting läuft)
+                if event.key == pygame.K_e and task_manager.active_task is None and not show_minimap and not my_player.is_venting and not meeting_active:
                     at_meeting_box = False
                     for box in emergency_hitboxes:
                         if my_player.rect.colliderect(box):
                             at_meeting_box = True
                             break
-                    
-                    if at_meeting_box and meeting_cooldown <= 0 and not my_player.is_dead:
-                        try: sock.sendall(struct.pack("!B", 40))
+
+                    # Liegt eine Leiche in Melde-Reichweite? (gleicher Radius wie beim Töten)
+                    near_body = False
+                    my_center = my_player.rect.center
+                    for body_id, (bx, by) in dead_bodies.items():
+                        body_center = (bx + PLAYER_SIZE // 2, by + PLAYER_SIZE // 2)
+                        if math.hypot(my_center[0] - body_center[0], my_center[1] - body_center[1]) < 60:
+                            near_body = True
+                            break
+
+                    if near_body and not my_player.is_dead:
+                        # Leiche melden -> Meeting starten (kein Cooldown, wie im echten Spiel)
+                        try: sock.sendall(struct.pack("!BB", 40, MEETING_REASON_BODY))
+                        except: pass
+                    elif at_meeting_box and meeting_cooldown <= 0 and not my_player.is_dead:
+                        try: sock.sendall(struct.pack("!BB", 40, MEETING_REASON_BUTTON))
                         except: pass
                     elif my_player.role == "Imposter" and not my_player.is_dead:
                         # Kill Suche
@@ -807,17 +859,23 @@ while running:
                             try: sock.sendall(struct.pack('!Bii', 2, int(my_player.rect.x), int(my_player.rect.y)))
                             except: pass
 
-        if meeting_system.is_active:
-            meeting_system.handle_event(event)
-        else:
-            # 2. Wenn Meeting NICHT aktiv ist, erlaube normales Gameplay
-            if event.type == pygame.KEYDOWN:
-                # Spieler drückt E, um Leiche zu melden
-                if event.key == pygame.K_e:
-                    for body in dead_bodies.items():
-                        if my_player.rect.colliderect(body.rect): # Befindet man sich in der Nähe?
-                            meeting_system.trigger_meeting(my_player.name, reason="BODY_REPORTED")
-                            break
+        # Abstimmen per Mausklick, während ein Meeting läuft (siehe draw_meeting())
+        if meeting_active and event.type == pygame.MOUSEBUTTONDOWN and event.button == 1 and not has_voted and not my_player.is_dead:
+            boxes, skip_rect = get_meeting_layout()
+            voted_target = None
+            for p_id, rect in boxes:
+                if p_id in dead_players:
+                    continue  # Tote können nicht gewählt werden
+                if rect.collidepoint(event.pos):
+                    voted_target = p_id
+                    break
+            if voted_target is None and skip_rect.collidepoint(event.pos):
+                voted_target = 255  # 255 = Skip, siehe Server-Protokoll
+
+            if voted_target is not None:
+                try: sock.sendall(struct.pack("!BB", 41, voted_target))
+                except: pass
+                has_voted = True
 
         task_manager.handle_event(event)
 
@@ -838,12 +896,6 @@ while running:
                 if my_id == host_id:
                     try: sock.sendall(struct.pack("!B", 23))
                     except: pass
-
-    if meeting_system.is_active:
-        meeting_system.update()
-    else:
-        # Normales Spiel update (Bewegung, Tasks etc.)
-        pass
 
     # --- RENDERING ---
     if state == "menu":
@@ -1026,9 +1078,6 @@ while running:
         if my_id == host_id: back_txt = small_font.render("Drücke ENTER, um alle in die Lobby zurückzuholen", True, (255, 255, 255))
         else: back_txt = small_font.render("Warte auf den Host für Lobby-Rückkehr...", True, (150, 150, 150))
         screen.blit(back_txt, (WIDTH // 2 - back_txt.get_width() // 2, HEIGHT // 2 + 100))
-
-    if meeting_system.is_active:
-        meeting_system.draw()
 
     pygame.display.update()
 

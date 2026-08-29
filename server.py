@@ -166,10 +166,12 @@ def handle_client(conn, player_id):
 
             elif packet == 40:
                 global in_meeting, meeting_votes, meeting_timer_obj
+                # Grund immer auslesen (0 = Notfallknopf, 1 = Leiche gemeldet), sonst verschiebt sich der Byte-Stream
+                reason = struct.unpack("!B", conn.recv(1))[0]
                 if game_active and not in_meeting and player_id not in dead_players:
                     in_meeting = True
                     meeting_votes = {}
-                    broadcast_to_all(struct.pack("!B", 40))
+                    broadcast_to_all(struct.pack("!BBB", 40, player_id, reason))
                     
                     # 30-Sekunden Abstimm-Timer starten
                     def end_meeting():
