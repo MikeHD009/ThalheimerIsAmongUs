@@ -221,6 +221,17 @@ def handle_client(conn, player_id):
                     # An alle senden, damit Häkchen gezeichnet werden
                     broadcast_to_all(struct.pack("!BBB", 41, player_id, target_id))
 
+            # NEU: Meeting-Chat. Nur während eines laufenden Meetings zulässig.
+            elif packet == 50:
+                msg_len = struct.unpack("!B", conn.recv(1))[0]
+                msg_bytes = b""
+                while len(msg_bytes) < msg_len:
+                    chunk = conn.recv(msg_len - len(msg_bytes))
+                    if not chunk: break
+                    msg_bytes += chunk
+                if in_meeting and len(msg_bytes) == msg_len and msg_len > 0:
+                    broadcast_to_all(struct.pack("!BBB", 50, player_id, msg_len) + msg_bytes)
+
             # Beim Zurücksetzen der Lobby (Paket 23) oder Match-Start (99) Timer abbrechen:
             elif packet == 23 or packet == 99:
                 if meeting_timer_obj:

@@ -261,6 +261,7 @@ def receive_data(sock):
     # meeting_cooldown nur LOKAL in dieser Funktion verändert und die Hauptschleife hat davon nie etwas gesehen.
     # Dadurch ist beim Empfang von Paket 40/43 nach außen hin scheinbar nichts passiert.
     global meeting_active, meeting_timer, has_voted, meeting_cooldown, meeting_caller_id, meeting_reason
+    global meeting_chat_input
     # show_minimap hatte denselben Fehler: wurde bei Meeting-Start lokal statt global auf False gesetzt
     global show_minimap
 
@@ -374,6 +375,9 @@ def receive_data(sock):
                 meeting_reason = reason
                 has_voted = False
                 player_votes.clear()
+                meeting_chat_log.clear()
+                meeting_chat_input = ""
+                dead_bodies.clear()  # Nach einem Meeting (egal ob Knopf oder Leiche) sind alle Leichen weg
                 if task_manager.active_task:
                     task_manager.reset_active_task()
                     task_manager.active_task = None
@@ -382,6 +386,17 @@ def receive_data(sock):
             elif packet_type == 41:
                 voter_id, target_id = struct.unpack("!BB", sock.recv(2))
                 player_votes[voter_id] = target_id
+
+            elif packet_type == 50:
+                sender_id, msg_len = struct.unpack("!BB", sock.recv(2))
+                msg_bytes = b""
+                while len(msg_bytes) < msg_len:
+                    chunk = sock.recv(msg_len - len(msg_bytes))
+                    if not chunk: break
+                    msg_bytes += chunk
+                message = msg_bytes.decode("utf-8", errors="replace")
+                sender_name = player_names.get(sender_id, f"Spieler {sender_id}")
+                meeting_chat_log.append(f"{sender_name}: {message}")
 
             elif packet_type == 43:
                 meeting_active = False
@@ -463,9 +478,9 @@ TASK_TEMPLATES = [
 task_buttons = []
 
 def get_meeting_layout():
-    """Liefert Spieler-Boxen + Skip-Button für die Meeting-Ansicht.
-    Wird sowohl von draw_meeting() (Zeichnen) als auch vom Mausklick-Handler
-    (Abstimmen) benutzt, damit beide garantiert dieselben Koordinaten verwenden."""
+    """Liefert Spieler-Boxen, Skip-Button und Chat-Bereiche für die Meeting-Ansicht.
+    Wird sowohl von draw_meeting() (Zeichnen) als auch vom Event-Handler (Abstimmen/Chat)
+    benutzt, damit beide garantiert dieselben Koordinaten verwenden."""
     box_w, box_h = 280, 60
     start_x = (WIDTH - (3 * (box_w + 20))) // 2
     start_y = 120
@@ -479,8 +494,12 @@ def get_meeting_layout():
         by = start_y + row * (box_h + 20)
         boxes.append((p_id, pygame.Rect(bx, by, box_w, box_h)))
 
-    skip_rect = pygame.Rect(WIDTH // 2 - 150, HEIGHT - 100, 300, 50)
-    return boxes, skip_rect
+    # Chat-Bereich unten: Log-Fenster + Eingabezeile mit Skip-Button daneben
+    input_row_y = HEIGHT - 60
+    chat_rect = pygame.Rect(40, HEIGHT - 230, WIDTH - 80, 150)
+    chat_input_rect = pygame.Rect(40, input_row_y, WIDTH - 80 - 210, 40)
+    skip_rect = pygame.Rect(WIDTH - 40 - 200, input_row_y, 200, 40)
+    return boxes, skip_rect, chat_rect, chat_input_rect
 
 def draw_meeting():
     # Dunkler Overlay-Hintergrund (wie die Map)
@@ -497,7 +516,7 @@ def draw_meeting():
     title_txt = menu_font.render(title_str, True, (255, 255, 255))
     screen.blit(title_txt, (WIDTH // 2 - title_txt.get_width() // 2, 40))
 
-    boxes, skip_rect = get_meeting_layout()
+    boxes, skip_rect, chat_rect, chat_input_rect = get_meeting_layout()
     for p_id, rect in boxes:
         is_p_dead = p_id in dead_players
         bg_color = (25, 25, 30) if is_p_dead else (40, 45, 55)
@@ -525,16 +544,39 @@ def draw_meeting():
             voted_marker = name_font.render("✔", True, (0, 255, 0))
             screen.blit(voted_marker, (rect.x + rect.width - 25, rect.y + (rect.height - voted_marker.get_height()) // 2))
             
-    # Skip-Button am unteren Rand
+    # Skip-Button (rechts neben der Chat-Eingabe)
     pygame.draw.rect(screen, (60, 65, 75), skip_rect, border_radius=8)
     pygame.draw.rect(screen, (200, 200, 200), skip_rect, 2, border_radius=8)
-    skip_txt = name_font.render("VOTING ÜBERSPRINGEN", True, (255, 255, 255))
+    skip_txt = name_font.render("SKIP", True, (255, 255, 255))
     screen.blit(skip_txt, (skip_rect.centerx - skip_txt.get_width() // 2, skip_rect.centery - skip_txt.get_height() // 2))
     
     skip_voters = sum(1 for v in player_votes.values() if v == 255)
     if skip_voters > 0:
-        sv_txt = name_font.render(f"Stimmen: {skip_voters}", True, (0, 255, 0))
-        screen.blit(sv_txt, (skip_rect.right + 15, skip_rect.centery - sv_txt.get_height() // 2))
+        sv_txt = name_font.render(f"({skip_voters})", True, (0, 255, 0))
+        screen.blit(sv_txt, (skip_rect.centerx - sv_txt.get_width() // 2, skip_rect.top - 22))
+
+    # =========================
+    # CHAT (unter der Abstimmung)
+    # =========================
+    pygame.draw.rect(screen, (25, 28, 35), chat_rect, border_radius=8)
+    pygame.draw.rect(screen, (90, 95, 105), chat_rect, width=2, border_radius=8)
+
+    line_height = 22
+    visible_lines = max(1, (chat_rect.height - 12) // line_height)
+    y_off = chat_rect.bottom - 8 - line_height
+    for msg in reversed(meeting_chat_log[-visible_lines:]):
+        msg_surf = chat_font.render(msg, True, (230, 230, 230))
+        screen.blit(msg_surf, (chat_rect.x + 10, y_off))
+        y_off -= line_height
+
+    # Eingabezeile
+    pygame.draw.rect(screen, (245, 245, 245), chat_input_rect, border_radius=6)
+    input_display = meeting_chat_input
+    # Text abschneiden, falls er breiter als das Feld wird (neueste Zeichen bleiben sichtbar)
+    while chat_font.size(input_display + "|")[0] > chat_input_rect.width - 16 and len(input_display) > 0:
+        input_display = input_display[1:]
+    input_surf = chat_font.render(input_display + "|", True, (20, 20, 20))
+    screen.blit(input_surf, (chat_input_rect.x + 8, chat_input_rect.y + (chat_input_rect.height - input_surf.get_height()) // 2))
 
 def draw_task_buttons(surface, buttons, player_obj, camera_x, camera_y):
     for btn in buttons:
@@ -565,6 +607,7 @@ def draw_task_buttons(surface, buttons, player_obj, camera_x, camera_y):
 # =========================
 menu_font = pygame.font.SysFont("arial", 40)
 small_font = pygame.font.SysFont("arial", 28)
+chat_font = pygame.font.SysFont("arial", 18)
 
 info_text1 = small_font.render(f"Bewegung: WASD", True, (255, 255, 255))
 info_text2 = small_font.render(f"Map öffnen/schließen: M", True, (255, 255, 255))
@@ -702,6 +745,8 @@ has_voted = False
 player_votes = {}
 meeting_caller_id = None
 meeting_reason = MEETING_REASON_BUTTON
+meeting_chat_log = []
+meeting_chat_input = ""
 running = True
 show_minimap = False  
 
@@ -748,123 +793,136 @@ while running:
 
         elif state == "game":
             if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_q:
-                    if task_manager.active_task:
-                        task_aborted = True
-                        task_manager.reset_active_task()
-                        task_manager.active_task = None
-                    elif show_minimap: show_minimap = False
-                    else:
-                        running = False
-                        pygame.quit()
-                        sys.exit()
-
-                if event.key == pygame.K_HASH:
-                    mapwalls = []
-
-                if event.key == pygame.K_m and task_manager.active_task is None:
-                    show_minimap = not show_minimap
-
-                # NEU: Pfeiltasten / AD Steuerung zum Durchwechseln, wenn man im Vent ist
-                if my_player.is_venting:
-                    if event.key in [pygame.K_LEFT, pygame.K_a, pygame.K_UP, pygame.K_w]:
-                        if vents:
-                            my_player.current_vent_idx = (my_player.current_vent_idx - 1) % len(vents)
-                            my_player.rect.center = vents[my_player.current_vent_idx].center
-                            # Versteckte Koordinaten halten, damit andere uns nicht sehen
-                            try: sock.sendall(struct.pack('!Bii', 2, -2000, -2000))
+                if meeting_active:
+                    # Während eines Meetings sind Tasten NUR für den Chat da - Q/M/E/Leertaste/
+                    # Vent-Wechsel dürfen hier nicht mehr durchgreifen (sonst würde z.B. "q" im
+                    # Chattext das ganze Spiel beenden oder "Leertaste" den Imposter venten lassen).
+                    if event.key == pygame.K_RETURN:
+                        msg = meeting_chat_input.strip()
+                        if msg:
+                            msg_bytes = msg.encode("utf-8")[:120]
+                            try: sock.sendall(struct.pack("!BB", 50, len(msg_bytes)) + msg_bytes)
                             except: pass
-                    elif event.key in [pygame.K_RIGHT, pygame.K_d, pygame.K_DOWN, pygame.K_s]:
-                        if vents:
-                            my_player.current_vent_idx = (my_player.current_vent_idx + 1) % len(vents)
-                            my_player.rect.center = vents[my_player.current_vent_idx].center
-                            try: sock.sendall(struct.pack('!Bii', 2, -2000, -2000))
-                            except: pass
+                        meeting_chat_input = ""
+                    elif event.key == pygame.K_BACKSPACE:
+                        meeting_chat_input = meeting_chat_input[:-1]
+                    elif event.unicode and event.unicode.isprintable() and len(meeting_chat_input) < 120:
+                        meeting_chat_input += event.unicode
+                else:
+                    if event.key == pygame.K_q:
+                        if task_manager.active_task:
+                            task_aborted = True
+                            task_manager.reset_active_task()
+                            task_manager.active_task = None
+                        elif show_minimap: show_minimap = False
+                        else:
+                            running = False
+                            pygame.quit()
+                            sys.exit()
 
-                # Interaktions-Logik (Blockiert, wenn man im Vent abgetaucht ist oder gerade ein Meeting läuft)
-                if event.key == pygame.K_e and task_manager.active_task is None and not show_minimap and not my_player.is_venting and not meeting_active:
-                    at_meeting_box = False
-                    for box in emergency_hitboxes:
-                        if my_player.rect.colliderect(box):
-                            at_meeting_box = True
-                            break
+                    if event.key == pygame.K_m and task_manager.active_task is None:
+                        show_minimap = not show_minimap
 
-                    # Liegt eine Leiche in Melde-Reichweite? (gleicher Radius wie beim Töten)
-                    near_body = False
-                    my_center = my_player.rect.center
-                    for body_id, (bx, by) in dead_bodies.items():
-                        body_center = (bx + PLAYER_SIZE // 2, by + PLAYER_SIZE // 2)
-                        if math.hypot(my_center[0] - body_center[0], my_center[1] - body_center[1]) < 60:
-                            near_body = True
-                            break
-
-                    if near_body and not my_player.is_dead:
-                        # Leiche melden -> Meeting starten (kein Cooldown, wie im echten Spiel)
-                        try: sock.sendall(struct.pack("!BB", 40, MEETING_REASON_BODY))
-                        except: pass
-                    elif at_meeting_box and meeting_cooldown <= 0 and not my_player.is_dead:
-                        try: sock.sendall(struct.pack("!BB", 40, MEETING_REASON_BUTTON))
-                        except: pass
-                    elif my_player.role == "Imposter" and not my_player.is_dead:
-                        # Kill Suche
-                        closest_id = None
-                        closest_dist = 60 # Kill-Reichweite
-                        my_center = my_player.rect.center
-                        for p_id, pos in other_players.items():
-                            if p_id not in dead_players:
-                                e_center = (pos[0] + PLAYER_SIZE//2, pos[1] + PLAYER_SIZE//2)
-                                dist = math.hypot(my_center[0] - e_center[0], my_center[1] - e_center[1])
-                                if dist < closest_dist:
-                                    closest_dist = dist
-                                    closest_id = p_id
-                        
-                        if closest_id is not None:
-                            try: sock.sendall(struct.pack("!BB", 30, closest_id)) # Sende Kill-Paket
-                            except: pass
-
-                    elif my_player.role == "Crewmate":
-                        # Aufgaben erledigen (auch als Geist möglich)
-                        for btn in task_buttons:
-                            t_idx = btn["task_index"]
-                            if t_idx not in my_player.my_assigned_tasks: continue
-
-                            distance = math.hypot(my_player.rect.centerx - btn["rect"].centerx, my_player.rect.centery - btn["rect"].centery)
-                            if distance < 50:
-                                if t_idx in my_player.my_completed_tasks:
-                                    already_done_timer = 90
-                                else:
-                                    if task_manager.start_task(t_idx) == "ALREADY_DONE":
-                                        already_done_timer = 90
-                                    else:
-                                        active_task_idx = t_idx
-                                        task_aborted = False 
-                                break
-                
-                # NEU: Überarbeitetes Vent-System mit Leertaste (Abtauchen / Auftauchen)
-                if event.key == pygame.K_SPACE and not show_minimap and not my_player.is_dead:
-                    if my_player.role == "Imposter":
-                        if not my_player.is_venting:
-                            # Abtauchen versuchen
-                            cv = get_current_vent(my_player, vents)
-                            if cv:
-                                my_player.is_venting = True
-                                my_player.current_vent_idx = vents.index(cv)
-                                my_player.rect.center = cv.center
-                                # Sende ungültige Off-Screen Position an den Server, damit wir unsichtbar werden
+                    # NEU: Pfeiltasten / AD Steuerung zum Durchwechseln, wenn man im Vent ist
+                    if my_player.is_venting:
+                        if event.key in [pygame.K_LEFT, pygame.K_a, pygame.K_UP, pygame.K_w]:
+                            if vents:
+                                my_player.current_vent_idx = (my_player.current_vent_idx - 1) % len(vents)
+                                my_player.rect.center = vents[my_player.current_vent_idx].center
+                                # Versteckte Koordinaten halten, damit andere uns nicht sehen
                                 try: sock.sendall(struct.pack('!Bii', 2, -2000, -2000))
                                 except: pass
-                        else:
-                            # Auftauchen aus dem aktuellen Vent
-                            my_player.is_venting = False
+                        elif event.key in [pygame.K_RIGHT, pygame.K_d, pygame.K_DOWN, pygame.K_s]:
                             if vents:
+                                my_player.current_vent_idx = (my_player.current_vent_idx + 1) % len(vents)
                                 my_player.rect.center = vents[my_player.current_vent_idx].center
-                            # Sende die echte Position wieder an den Server
-                            try: sock.sendall(struct.pack('!Bii', 2, int(my_player.rect.x), int(my_player.rect.y)))
+                                try: sock.sendall(struct.pack('!Bii', 2, -2000, -2000))
+                                except: pass
+
+                    # Interaktions-Logik (Blockiert, wenn man im Vent abgetaucht ist)
+                    if event.key == pygame.K_e and task_manager.active_task is None and not show_minimap and not my_player.is_venting:
+                        at_meeting_box = False
+                        for box in emergency_hitboxes:
+                            if my_player.rect.colliderect(box):
+                                at_meeting_box = True
+                                break
+
+                        # Liegt eine Leiche in Melde-Reichweite? (gleicher Radius wie beim Töten)
+                        near_body = False
+                        my_center = my_player.rect.center
+                        for body_id, (bx, by) in dead_bodies.items():
+                            body_center = (bx + PLAYER_SIZE // 2, by + PLAYER_SIZE // 2)
+                            if math.hypot(my_center[0] - body_center[0], my_center[1] - body_center[1]) < 60:
+                                near_body = True
+                                break
+
+                        if near_body and not my_player.is_dead:
+                            # Leiche melden -> Meeting starten (kein Cooldown, wie im echten Spiel)
+                            try: sock.sendall(struct.pack("!BB", 40, MEETING_REASON_BODY))
                             except: pass
+                        elif at_meeting_box and meeting_cooldown <= 0 and not my_player.is_dead:
+                            try: sock.sendall(struct.pack("!BB", 40, MEETING_REASON_BUTTON))
+                            except: pass
+                        elif my_player.role == "Imposter" and not my_player.is_dead:
+                            # Kill Suche
+                            closest_id = None
+                            closest_dist = 60 # Kill-Reichweite
+                            my_center = my_player.rect.center
+                            for p_id, pos in other_players.items():
+                                if p_id not in dead_players:
+                                    e_center = (pos[0] + PLAYER_SIZE//2, pos[1] + PLAYER_SIZE//2)
+                                    dist = math.hypot(my_center[0] - e_center[0], my_center[1] - e_center[1])
+                                    if dist < closest_dist:
+                                        closest_dist = dist
+                                        closest_id = p_id
+                            
+                            if closest_id is not None:
+                                try: sock.sendall(struct.pack("!BB", 30, closest_id)) # Sende Kill-Paket
+                                except: pass
+
+                        elif my_player.role == "Crewmate":
+                            # Aufgaben erledigen (auch als Geist möglich)
+                            for btn in task_buttons:
+                                t_idx = btn["task_index"]
+                                if t_idx not in my_player.my_assigned_tasks: continue
+
+                                distance = math.hypot(my_player.rect.centerx - btn["rect"].centerx, my_player.rect.centery - btn["rect"].centery)
+                                if distance < 50:
+                                    if t_idx in my_player.my_completed_tasks:
+                                        already_done_timer = 90
+                                    else:
+                                        if task_manager.start_task(t_idx) == "ALREADY_DONE":
+                                            already_done_timer = 90
+                                        else:
+                                            active_task_idx = t_idx
+                                            task_aborted = False 
+                                    break
+                    
+                    # NEU: Überarbeitetes Vent-System mit Leertaste (Abtauchen / Auftauchen)
+                    if event.key == pygame.K_SPACE and not show_minimap and not my_player.is_dead:
+                        if my_player.role == "Imposter":
+                            if not my_player.is_venting:
+                                # Abtauchen versuchen
+                                cv = get_current_vent(my_player, vents)
+                                if cv:
+                                    my_player.is_venting = True
+                                    my_player.current_vent_idx = vents.index(cv)
+                                    my_player.rect.center = cv.center
+                                    # Sende ungültige Off-Screen Position an den Server, damit wir unsichtbar werden
+                                    try: sock.sendall(struct.pack('!Bii', 2, -2000, -2000))
+                                    except: pass
+                            else:
+                                # Auftauchen aus dem aktuellen Vent
+                                my_player.is_venting = False
+                                if vents:
+                                    my_player.rect.center = vents[my_player.current_vent_idx].center
+                                # Sende die echte Position wieder an den Server
+                                try: sock.sendall(struct.pack('!Bii', 2, int(my_player.rect.x), int(my_player.rect.y)))
+                                except: pass
 
         # Abstimmen per Mausklick, während ein Meeting läuft (siehe draw_meeting())
         if meeting_active and event.type == pygame.MOUSEBUTTONDOWN and event.button == 1 and not has_voted and not my_player.is_dead:
-            boxes, skip_rect = get_meeting_layout()
+            boxes, skip_rect, chat_rect, chat_input_rect = get_meeting_layout()
             voted_target = None
             for p_id, rect in boxes:
                 if p_id in dead_players:
