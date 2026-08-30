@@ -84,6 +84,7 @@ class Player:
         self.is_dead = False 
         self.is_venting = False       # NEU: Ob der Imposter gerade im Vent ist
         self.current_vent_idx = -1    # NEU: Index des aktuellen Vents
+        self.facing_left = False      # NEU: Blickrichtung fürs Spiegeln (Bild schaut standardmäßig nach rechts)
 
     def move(self, keys, hitboxes):
         old_x = self.rect.x
@@ -97,6 +98,13 @@ class Player:
         if keys[pygame.K_s] or keys[pygame.K_DOWN]:  dy += current_speed
         if keys[pygame.K_a] or keys[pygame.K_LEFT]:  dx -= current_speed
         if keys[pygame.K_d] or keys[pygame.K_RIGHT]: dx += current_speed
+
+        # NEU: Blickrichtung nur anhand der horizontalen Eingabe setzen (kein Sprung/Hüpfen,
+        # nur ein reiner Links/Rechts-Flip des Bildes)
+        if dx < 0:
+            self.facing_left = True
+        elif dx > 0:
+            self.facing_left = False
 
         if dx != 0 and dy != 0:
             dx *= 0.7071
@@ -125,6 +133,8 @@ class Player:
         draw_rect.y -= camera_y
         
         img_to_draw = self.image.copy()
+        if self.facing_left:
+            img_to_draw = pygame.transform.flip(img_to_draw, True, False)
         if self.is_dead:
             img_to_draw.set_alpha(128) # Eigener Geist ist leicht transparent
         elif self.is_venting:
@@ -230,7 +240,8 @@ def get_current_plant(player, plants):
 other_players = {}
 player_names = {}
 dead_players = set()     
-dead_bodies = {}         
+dead_bodies = {}
+player_facing_left = {}  # NEU: Blickrichtung anderer Spieler (True = schaut/geht nach links)
 
 my_id = None
 player_count = 0
@@ -287,6 +298,12 @@ def receive_data(sock):
                     if not packet: return
                     data_b += packet
                 p_id, x, y = struct.unpack("!Bii", data_b)
+                if p_id in other_players:
+                    old_x = other_players[p_id][0]
+                    if x < old_x:
+                        player_facing_left[p_id] = True
+                    elif x > old_x:
+                        player_facing_left[p_id] = False
                 other_players[p_id] = [x, y]
 
             elif packet_type == 3:
@@ -346,6 +363,7 @@ def receive_data(sock):
                 my_player.current_vent_idx = -1    # NEU: Vent-Index zurücksetzen
                 dead_players.clear()
                 dead_bodies.clear()
+                player_facing_left.clear()
                 my_player.rect.x = lobby_spawn_rects[my_id % len(lobby_spawn_rects)].x
                 my_player.rect.y = lobby_spawn_rects[my_id % len(lobby_spawn_rects)].y
                 try: sock.sendall(struct.pack('!Bii', 2, int(my_player.rect.x), int(my_player.rect.y)))
@@ -356,9 +374,13 @@ def receive_data(sock):
                 dead_players.add(dead_id)
                 if dead_id == my_id:
                     my_player.is_dead = True
-                    dead_bodies[dead_id] = (my_player.rect.x, my_player.rect.y)
-                elif dead_id in other_players:
-                    dead_bodies[dead_id] = (other_players[dead_id][0], other_players[dead_id][1])
+                # Im Meeting rausgevotete Spieler hinterlassen keine Leiche (wie im Original-Spiel) -
+                # nur ein "echter" Mord außerhalb eines Meetings erzeugt eine meldbare Leiche.
+                if not meeting_active:
+                    if dead_id == my_id:
+                        dead_bodies[dead_id] = (my_player.rect.x, my_player.rect.y)
+                    elif dead_id in other_players:
+                        dead_bodies[dead_id] = (other_players[dead_id][0], other_players[dead_id][1])
 
             elif packet_type == 32:
                 num_imps = struct.unpack("!B", sock.recv(1))[0]
@@ -637,6 +659,8 @@ def draw_lobby():
     for p_id, pos in other_players.items():
         enemy_img = player_images.get(p_id % len(player_images))
         if enemy_img:
+            if player_facing_left.get(p_id):
+                enemy_img = pygame.transform.flip(enemy_img, True, False)
             internal_surface.blit(enemy_img, (pos[0] - camera_x, pos[1] - camera_y))
             e_name = player_names.get(p_id, f"Player {p_id}")
             name_text = name_font.render(e_name, True, (255, 255, 255))
@@ -1018,6 +1042,8 @@ while running:
             
             if current_alpha > 0:
                 img_copy = enemy_img.copy()
+                if player_facing_left.get(p_id):
+                    img_copy = pygame.transform.flip(img_copy, True, False)
                 if p_id in dead_players: img_copy.set_alpha(min(current_alpha, 128))
                 else: img_copy.set_alpha(current_alpha)
                     

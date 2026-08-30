@@ -20,6 +20,20 @@ class TaskManager:
         if 0 <= index < len(self.tasks):
             self.active_task = self.tasks[index]
 
+    def reset_active_task(self):
+        """Bricht die aktuell aktive Aufgabe ab (z.B. weil ein Meeting startet) und
+        ersetzt sie durch eine frische Instanz, damit beim nächsten Versuch nicht mit
+        altem Fortschritt weitergemacht wird. Zählt NICHT als erledigt."""
+        if self.active_task is None:
+            return
+        try:
+            idx = self.tasks.index(self.active_task)
+            fresh_task = type(self.active_task)(self.active_task.screen)
+            self.tasks[idx] = fresh_task
+        except Exception:
+            pass  # Im Zweifel lieber die alte Instanz behalten als abzustürzen
+        self.active_task = None
+
     def show_message(self, text, duration=120):
         self.message = text
         self.message_timer = duration
