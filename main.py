@@ -6,8 +6,11 @@ import math
 import json
 import sys
 import os
+import time
+import random
 
 import tasks
+import roles
 # HINWEIS: MeetingSystem aus Meeting.py wird nicht mehr eingebunden, siehe Kommentar weiter unten
 # bei der Initialisierung der Meeting-Variablen.
 
@@ -23,6 +26,48 @@ PORT = 5555
 VISION_RADIUS = 7.2 * TILE_SIZE  # 6 Tiles Sichtweite
 FADE_SPEED = 15                # Wie schnell die Deckkraft (0-255) pro Frame steigt/fällt
 player_visibility = {}
+
+# =========================
+# ROLLEN-SYSTEM: KONSTANTEN
+# =========================
+KILL_RANGE_DEFAULT = 60
+KILL_COOLDOWN_DEFAULT = 20.0
+KILL_RANGE_MARTIN = 90
+KILL_COOLDOWN_MARTIN = 35.0
+MONIKA_RECALL_INTERVAL = 15.0   # laut Dokument: alle 15 Sekunden zurueck zur Flagge
+STROBLPETER_MARK_DELAY = 10.0
+STROBLPETER_MARK_RANGE = 250
+EVELYN_COOLDOWN = 30.0
+EVELYN_HAZARD_DURATION = 20.0
+EVELYN_LINGER_LIMIT = 5.0
+NOAH_TRAP_RANGE = 60
+NOAH_TRAP_LIMIT = 3       # laut Dokument: maximal 3 Fallen, die aelteste wird ersetzt
+NOAH_TRAP_COOLDOWN = 15.0 # laut Dokument: 15s Ablinkzeit
+YOSHI_FIND_LIMIT = 3      # laut Dokument: bis zu 3 Standards, pro Fund eine Aufdeckung
+EVELYN_FOG_COLOR = (200, 225, 255, 90)  # weissblaeulicher Nebel in den geoeffneten Raeumen
+VOGELSCHEICHER_RANGE = 60
+VOGELSCHEICHER_INVISIBLE_DURATION = 8.0
+IMMORTALITY_DURATION_CLIENT = 10.0
+PLESCHBERGSTEIGER_RANGE = 60
+YOSHI_FIND_RANGE = 40
+TAPPEIHNACHTSMANN_FIND_RANGE = 40
+RAPHI_COLLECT_RANGE = 40
+RAMONA_FORGE_RANGE = 80
+RAMONA_FORGE_COOLDOWN_CLIENT = 10.0
+RAMONA_WIN_STAND_TIME = 10.0
+DAVID_MARK_RANGE = 250
+VLADIMIR_INTRO_DURATION = 5.0
+RAMONA_MIN_PLAYERS_CLIENT = 4  # muss zu RAMONA_MIN_PLAYERS in server.py passen
+MAX_IMPOSTERS = 3
+
+# Lauf-Animation: das Spielerbild wippt beim Gehen leicht nach oben
+WALK_BOB_PIXELS = 3      # maximale Auslenkung nach oben in Pixeln
+WALK_BOB_SPEED = 14.0    # Schwingungen pro Sekunde (Radiant/s)
+WALK_IDLE_TIMEOUT = 0.15 # so lange gilt ein anderer Spieler nach der letzten Positionsmeldung als "laufend"
+
+# Einsammelbare Rollen-Items (Raphi/Tappeihnachtsmann/Yoshi)
+ITEM_SIZE = int(TILE_SIZE * 0.8)
+ITEM_MIN_SPACING = 110   # Mindestabstand zwischen zwei Items, damit sie sich verteilen
 
 pygame.init()
 
@@ -67,6 +112,49 @@ for i, color in enumerate(PLAYER_COLORS):
         fallback_dead.fill((255, 100, 100, 180), special_flags=pygame.BLEND_RGBA_MULT)
         player_dead_images[i] = fallback_dead
 
+# NEU: Rollenbilder für den Reveal-Screen, analog zu player_images geladen (Cache, einmalig)
+ROLE_IMAGES = {}
+ROLE_THUMB_SIZE = int(TILE_SIZE * 1.4)
+ROLE_REVEAL_SIZE = int(TILE_SIZE * 4)
+
+def get_role_image(role_key, size):
+    if role_key is None:
+        return None
+    cache_key = (role_key, size)
+    if cache_key in ROLE_IMAGES:
+        return ROLE_IMAGES[cache_key]
+    try:
+        filename = roles.ROLES[role_key]["image"]
+        img = pygame.image.load(f"Assets/Character/Roles/{filename}").convert_alpha()
+        img = pygame.transform.scale(img, (size, size))
+    except Exception as e:
+        print("ROLE IMAGE LOAD ERROR:", e)
+        img = None
+    ROLE_IMAGES[cache_key] = img
+    return img
+
+# NEU: Texturen fuer die einsammelbaren Rollen-Items und die platzierbaren Objekte.
+# Es sind bewusst schlichte Platzhalter - einfach die PNGs in Assets/Items durch echte
+# Grafiken mit denselben Dateinamen ersetzen (siehe tools_generate_item_placeholders.py).
+ITEM_FILES = {
+    "pfandflasche": "pfandflasche.png",   # Raphi
+    "geschenk": "geschenk.png",           # Tappeihnachtsmann
+    "standard": "standard.png",           # Yoshi
+    "flagge": "flagge.png",               # Monika
+    "falle": "falle.png",                 # Noah
+    "schere": "schere.png",               # Martin (steckt in der Leiche)
+}
+item_images = {}
+for _item_key, _item_file in ITEM_FILES.items():
+    try:
+        _item_img = pygame.image.load(f"Assets/Items/{_item_file}").convert_alpha()
+        item_images[_item_key] = pygame.transform.scale(_item_img, (ITEM_SIZE, ITEM_SIZE))
+    except Exception as _e:
+        print("ITEM IMAGE LOAD ERROR:", _item_file, _e)
+        _fallback = pygame.Surface((ITEM_SIZE, ITEM_SIZE), pygame.SRCALPHA)
+        pygame.draw.circle(_fallback, (80, 180, 255), (ITEM_SIZE // 2, ITEM_SIZE // 2), ITEM_SIZE // 2)
+        item_images[_item_key] = _fallback
+
 # =========================
 # SPIELER KLASSE
 # =========================
@@ -77,14 +165,19 @@ class Player:
     def __init__(self, x, y, image):
         self.rect = pygame.Rect(x, y, PLAYER_SIZE, PLAYER_SIZE)
         self.image = image
-        self.role = "Crewmate" 
+        self.role = "Crewmate"
         self.role_desc = "Erledige alle Aufgaben und finde die Imposter."
+        self.role_key = None                    # NEU: z.B. "steinermike", None = generische Rolle
+        self.role_display_name = "Crewmate"      # NEU: Anzeigename für den Reveal-Screen
+        self.role_image = None                   # NEU: geladenes Rollenbild (pygame.Surface)
         self.my_assigned_tasks = []
         self.my_completed_tasks = []
         self.is_dead = False 
         self.is_venting = False       # NEU: Ob der Imposter gerade im Vent ist
         self.current_vent_idx = -1    # NEU: Index des aktuellen Vents
         self.facing_left = False      # NEU: Blickrichtung fürs Spiegeln (Bild schaut standardmäßig nach rechts)
+        self.is_moving = False        # NEU: Laufanimation - bewegt sich der Spieler gerade?
+        self.walk_phase = 0.0         # NEU: Laufanimation - Phase der Auf-/Ab-Schwingung
 
     def move(self, keys, hitboxes):
         old_x = self.rect.x
@@ -125,7 +218,25 @@ class Player:
                     if dy > 0: self.rect.bottom = box.top
                     if dy < 0: self.rect.top = box.bottom
 
-        return self.rect.x != old_x or self.rect.y != old_y
+        moved = self.rect.x != old_x or self.rect.y != old_y
+        self.is_moving = moved
+        return moved
+
+    def update_walk_anim(self, dt, moving=None):
+        """NEU: Laufanimation. Solange sich der Spieler bewegt, laeuft eine Sinus-Phase
+        weiter, aus der walk_offset() einen leichten Versatz nach oben berechnet. Im Stand wird
+        die Phase zurueckgesetzt, damit der Spieler sauber auf dem Boden steht."""
+        if moving is not None:
+            self.is_moving = moving
+        if self.is_moving:
+            self.walk_phase += WALK_BOB_SPEED * dt
+        else:
+            self.walk_phase = 0.0
+
+    def walk_offset(self):
+        if not self.is_moving:
+            return 0
+        return -int(round(abs(math.sin(self.walk_phase)) * WALK_BOB_PIXELS))
 
     def draw(self, surface, camera_x, camera_y):
         draw_rect = self.rect.copy()
@@ -139,8 +250,8 @@ class Player:
             img_to_draw.set_alpha(128) # Eigener Geist ist leicht transparent
         elif self.is_venting:
             img_to_draw.set_alpha(100) # NEU: Eigener Imposter wird im Vent halbtransparent angezeigt
-            
-        surface.blit(img_to_draw, (draw_rect.x, draw_rect.y))
+
+        surface.blit(img_to_draw, (draw_rect.x, draw_rect.y + self.walk_offset()))
 
 class TextInput:
     def __init__(self, x, y, w, h, font):
@@ -169,9 +280,12 @@ class TextInput:
 # MAP & HITBOX LOADER
 # =========================
 def load_hitboxes(filepath):
-    hitboxes, vents, plants, tasks_hitboxes, mapwalls, spawnpoints, emergency_hitboxes = [], [], [], [], [], [], []
+    hitboxes, vents, plants, tasks_hitboxes, mapwalls, spawnpoints, emergency_hitboxes, window_zones = [], [], [], [], [], [], [], []
+    # NEU: room_rects sind die Innenflaechen der echten Raeume (Tiled-Layer "Sabotage" und
+    # "WindowSabotage"). Nur dort duerfen Rollen-Items liegen - ausserhalb waere es "neben der Map".
+    room_rects = []
     if not os.path.exists(filepath):
-        return hitboxes, vents, plants, tasks_hitboxes, mapwalls, spawnpoints, emergency_hitboxes
+        return hitboxes, vents, plants, tasks_hitboxes, mapwalls, spawnpoints, emergency_hitboxes, window_zones, room_rects
     
     with open(filepath, "r", encoding="utf-8-sig") as f:
         map_data = json.load(f)
@@ -221,8 +335,23 @@ def load_hitboxes(filepath):
             elif "data" in layer:
                 for i, t_id in enumerate(layer["data"]):
                     if t_id != 0: emergency_hitboxes.append(pygame.Rect((i % map_width) * TILE_SIZE, (i // map_width) * TILE_SIZE, TILE_SIZE, TILE_SIZE))
-                        
-    return hitboxes, vents, plants, tasks_hitboxes, mapwalls, spawnpoints, emergency_hitboxes
+        # NEU: Fensterräume für Evelyns Fähigkeit (bisher ungenutzter Tiled-Layer)
+        elif name == "WindowSabotage":
+            if "objects" in layer:
+                for obj in layer["objects"]:
+                    r = pygame.Rect(obj["x"], obj["y"], obj["width"], obj["height"])
+                    window_zones.append(r)
+                    room_rects.append(r)
+            elif "data" in layer:
+                for i, t_id in enumerate(layer["data"]):
+                    if t_id != 0: window_zones.append(pygame.Rect((i % map_width) * TILE_SIZE, (i // map_width) * TILE_SIZE, TILE_SIZE, TILE_SIZE))
+        # NEU: "Sabotage" markiert ebenfalls komplette Raeume - zusammen mit WindowSabotage
+        # ergibt das die Liste aller Innenraeume, in denen Items liegen duerfen.
+        elif name == "Sabotage":
+            if "objects" in layer:
+                for obj in layer["objects"]: room_rects.append(pygame.Rect(obj["x"], obj["y"], obj["width"], obj["height"]))
+
+    return hitboxes, vents, plants, tasks_hitboxes, mapwalls, spawnpoints, emergency_hitboxes, window_zones, room_rects
 
 def get_current_vent(player, vents):
     for vent in vents:
@@ -234,6 +363,90 @@ def get_current_plant(player, plants):
         if player.rect.colliderect(plant): return plant
     return None
 
+def pick_item_spots(count):
+    """NEU: Sucht Positionen fuer einsammelbare Rollen-Items (Pfandflaschen, Geschenke,
+    Standards). Es werden ausschliesslich Punkte INNERHALB der Raeume verwendet (room_rects aus
+    den Tiled-Layern 'Sabotage'/'WindowSabotage'), die auf keiner Wand- oder Objekt-Hitbox liegen.
+    Damit kann nie ein Item ausserhalb der Map oder in einer Wand landen.
+    Rueckgabe: Liste von pygame.Rect in Item-Groesse."""
+    spots = []
+    if count <= 0:
+        return spots
+
+    attempts = 0
+    while room_rects and len(spots) < count and attempts < count * 400:
+        attempts += 1
+        room = random.choice(room_rects)
+        if room.width < ITEM_SIZE * 3 or room.height < ITEM_SIZE * 3:
+            continue
+        x = random.randint(room.left + ITEM_SIZE, room.right - 2 * ITEM_SIZE)
+        y = random.randint(room.top + ITEM_SIZE, room.bottom - 2 * ITEM_SIZE)
+        cand = pygame.Rect(x, y, ITEM_SIZE, ITEM_SIZE)
+        if any(cand.colliderect(box) for box in hitboxes):
+            continue
+        if any(math.hypot(cand.centerx - s.centerx, cand.centery - s.centery) < ITEM_MIN_SPACING for s in spots):
+            continue
+        spots.append(cand)
+
+    # Notfall-Auffuellung: Task-Positionen liegen garantiert in Raeumen
+    if len(spots) < count and tasks_hitboxes:
+        for t in random.sample(tasks_hitboxes, len(tasks_hitboxes)):
+            if len(spots) >= count:
+                break
+            cand = pygame.Rect(0, 0, ITEM_SIZE, ITEM_SIZE)
+            cand.center = t.center
+            if not any(cand.colliderect(s) for s in spots):
+                spots.append(cand)
+    return spots
+
+def draw_world_items(surface, spots, image_key, my_center, camera_x, camera_y):
+    """NEU: Zeichnet die noch nicht eingesammelten Rollen-Items auf der Map - nur im
+    Sichtradius und mit freier Sichtlinie, genau wie Spieler und Leichen."""
+    img = item_images.get(image_key)
+    if img is None:
+        return
+    for spot in spots:
+        if math.hypot(my_center[0] - spot.centerx, my_center[1] - spot.centery) > VISION_RADIUS:
+            continue
+        if not has_line_of_sight(my_center, spot.center, mapwalls):
+            continue
+        surface.blit(img, (spot.x - camera_x, spot.y - camera_y))
+
+def update_other_walk_anims(dt):
+    """NEU: Laufanimation der anderen Spieler. Wer kuerzlich eine neue Position gemeldet
+    hat, gilt als laufend und bekommt eine weiterlaufende Sinus-Phase."""
+    now = time.time()
+    for p_id in list(other_players.keys()):
+        if now - player_last_move_time.get(p_id, 0.0) < WALK_IDLE_TIMEOUT:
+            player_walk_phase[p_id] = player_walk_phase.get(p_id, 0.0) + WALK_BOB_SPEED * dt
+        else:
+            player_walk_phase[p_id] = 0.0
+
+def get_walk_offset(p_id):
+    """NEU: Aktueller vertikaler Versatz der Laufanimation eines anderen Spielers."""
+    phase = player_walk_phase.get(p_id, 0.0)
+    if phase <= 0.0:
+        return 0
+    return -int(round(abs(math.sin(phase)) * WALK_BOB_PIXELS))
+
+def find_nearest_player(my_center, other_players_dict, range_limit, dead_players_set, want_dead=False, exclude_ids=()):
+    """Sucht den naechsten Spieler aus other_players in Reichweite. want_dead=True sucht
+    ausschliesslich unter Geistern (fuer Pleschbergsteigers Wiederbelebung), sonst nur Lebende.
+    exclude_ids blendet Spieler komplett aus (z.B. die eigenen Imposter-Mitspieler beim Kill)."""
+    closest_id, closest_dist = None, range_limit
+    for p_id, pos in other_players_dict.items():
+        if p_id in exclude_ids:
+            continue
+        is_dead = p_id in dead_players_set
+        if is_dead != want_dead:
+            continue
+        p_center = (pos[0] + PLAYER_SIZE // 2, pos[1] + PLAYER_SIZE // 2)
+        dist = math.hypot(my_center[0] - p_center[0], my_center[1] - p_center[1])
+        if dist < closest_dist:
+            closest_dist = dist
+            closest_id = p_id
+    return closest_id
+
 # =========================
 # NETZWERK LOGIK
 # =========================
@@ -242,6 +455,8 @@ player_names = {}
 dead_players = set()     
 dead_bodies = {}
 player_facing_left = {}  # NEU: Blickrichtung anderer Spieler (True = schaut/geht nach links)
+player_last_move_time = {}  # NEU: Zeitpunkt der letzten Positionsmeldung (fuer die Laufanimation)
+player_walk_phase = {}      # NEU: aktuelle Laufanimations-Phase je Spieler
 
 my_id = None
 player_count = 0
@@ -252,6 +467,63 @@ imposter_reveal_ids = []
 
 global_task_progress = 0
 global_task_max = 0
+
+# =========================
+# ROLLEN-SYSTEM: NETZWERK- UND FÄHIGKEITS-ZUSTAND
+# =========================
+enabled_roles = set()          # vom Server per Paket 14 gesyncte aktive Rollen (nur Anzeige für Nicht-Host)
+independent_winner_id = None   # für den "independent_win"-Screen
+my_imposter_teammates = []     # NEU: IDs der anderen Imposter (nur Imposter bekommen diese Liste)
+show_role_info = False         # NEU: Rollen-Info-Panel (Button am Bildschirmrand) sichtbar?
+
+kill_cooldown_remaining = 0.0
+
+monika_flag_pos = None
+monika_flag_used = False
+monika_recall_timer = 0.0
+
+stroblpeter_marked_id = None
+stroblpeter_mark_timer = 0.0
+stroblpeter_ready_to_strike = False
+
+evelyn_cooldown_remaining = 0.0
+window_hazard_until = 0.0      # von Server (Paket 61) - bis wann die Fenster-Gefahr aktiv ist
+window_zone_timer = 0.0        # wie lange man schon ununterbrochen in einer Gefahrenzone steht
+
+laurin_uses_left = 0
+
+david_marked_id = None
+
+noah_traps = []            # bis zu NOAH_TRAP_LIMIT eigene Fallen [(x, y), ...]
+noah_trap_cooldown = 0.0
+
+vogelscheicher_invisible_until = 0.0
+decoys = {}                    # pid -> [x, y, expire_time] -- Attrappen anderer Spieler
+
+pleschbergsteiger_uses_left = 0
+
+yoshi_finds = 0
+yoshi_find_points = []
+yoshi_reveals_left = 0     # pro gefundenem Standard eine Rollen-Aufdeckung
+yoshi_reveal_result = None     # (target_id, team_str, role_name)
+yoshi_reveal_timer = 0.0
+
+kaliyoga_bonus_used = False
+
+tappeihnachtsmann_uses_left = 0
+tappeihnachtsmann_find_points = []
+immortal_until = 0.0           # lokale Anzeige (von Server Paket 78 gesetzt)
+immortal_banner_timer = 0.0
+
+raphi_collected = 0
+raphi_collect_points = []
+
+ramona_last_forge = 0.0
+ramona_others_rights = {}      # pid -> verbleibende Rechte (aus Paket 80)
+ramona_stand_timer = 0.0
+
+vladimir_active = False
+ghost_intro_timer = 0.0
 
 def has_line_of_sight(p1, p2, hitboxes):
     min_x, max_x = min(p1[0], p2[0]), max(p1[0], p2[0])
@@ -275,6 +547,21 @@ def receive_data(sock):
     global meeting_chat_input
     # show_minimap hatte denselben Fehler: wurde bei Meeting-Start lokal statt global auf False gesetzt
     global show_minimap
+    # NEU: Rollen-System - alle Namen, die in dieser Funktion (neu) zugewiesen werden, müssen global sein
+    global enabled_roles, independent_winner_id, vladimir_active, ghost_intro_timer
+    global my_imposter_teammates, show_role_info
+    global kill_cooldown_remaining
+    global monika_flag_pos, monika_flag_used, monika_recall_timer
+    global stroblpeter_marked_id, stroblpeter_mark_timer, stroblpeter_ready_to_strike
+    global evelyn_cooldown_remaining, window_hazard_until, window_zone_timer
+    global laurin_uses_left, david_marked_id, noah_traps, noah_trap_cooldown
+    global vogelscheicher_invisible_until, decoys
+    global pleschbergsteiger_uses_left
+    global yoshi_finds, yoshi_find_points, yoshi_reveals_left, yoshi_reveal_result, yoshi_reveal_timer
+    global kaliyoga_bonus_used
+    global tappeihnachtsmann_uses_left, tappeihnachtsmann_find_points, immortal_until, immortal_banner_timer
+    global raphi_collected, raphi_collect_points
+    global ramona_last_forge, ramona_others_rights, ramona_stand_timer
 
     while True:
         try:
@@ -299,11 +586,16 @@ def receive_data(sock):
                     data_b += packet
                 p_id, x, y = struct.unpack("!Bii", data_b)
                 if p_id in other_players:
-                    old_x = other_players[p_id][0]
+                    old_x, old_y = other_players[p_id][0], other_players[p_id][1]
                     if x < old_x:
                         player_facing_left[p_id] = True
                     elif x > old_x:
                         player_facing_left[p_id] = False
+                    # NEU: Laufanimation - merken, wann sich der Spieler zuletzt wirklich bewegt hat
+                    if (x, y) != (old_x, old_y):
+                        player_last_move_time[p_id] = time.time()
+                else:
+                    player_last_move_time[p_id] = time.time()
                 other_players[p_id] = [x, y]
 
             elif packet_type == 3:
@@ -312,6 +604,42 @@ def receive_data(sock):
                 intro_timer = 300
                 my_player.rect.x = spawnpoints[my_id].x
                 my_player.rect.y = spawnpoints[my_id].y
+
+                modifiers = struct.unpack("!B", sock.recv(1))[0]
+                vladimir_active = bool(modifiers & 1)
+
+                # Lokalen Fähigkeits-Zustand für die neue Runde zurücksetzen
+                # (rollenspezifische Felder wie yoshi_finds/laurin_uses_left etc. werden
+                # bereits in Paket 5 gesetzt, das immer VOR Paket 3 eintrifft)
+                kill_cooldown_remaining = 0.0
+                monika_flag_pos = None
+                monika_flag_used = False
+                monika_recall_timer = 0.0
+                stroblpeter_marked_id = None
+                stroblpeter_mark_timer = 0.0
+                stroblpeter_ready_to_strike = False
+                evelyn_cooldown_remaining = 0.0
+                window_hazard_until = 0.0
+                window_zone_timer = 0.0
+                david_marked_id = None
+                noah_traps = []
+                noah_trap_cooldown = 0.0
+                vogelscheicher_invisible_until = 0.0
+                decoys = {}
+                yoshi_reveal_result = None
+                yoshi_reveal_timer = 0.0
+                kaliyoga_bonus_used = False
+                immortal_until = 0.0
+                immortal_banner_timer = 0.0
+                ramona_last_forge = 0.0
+                ramona_others_rights = {pid: 3 for pid in player_names.keys() if pid != my_id} if role_key == "ramona" else {}
+                ramona_stand_timer = 0.0
+                ghost_intro_timer = 0.0
+                independent_winner_id = None
+                show_role_info = False
+                player_walk_phase.clear()
+                player_last_move_time.clear()
+
                 try: sock.sendall(struct.pack('!Bii', 2, int(my_player.rect.x), int(my_player.rect.y)))
                 except: pass
 
@@ -322,20 +650,76 @@ def receive_data(sock):
                     if p_id in other_players: del other_players[p_id]
 
             elif packet_type == 5:
-                role_id = struct.unpack("!B", sock.recv(1))[0]
-                if role_id == 1:
+                base_team_byte, role_id = struct.unpack("!BB", sock.recv(2))
+                role_key = roles.role_key_of(role_id)
+
+                if base_team_byte == 1:
                     my_player.role = "Imposter"
-                    my_player.role_desc = "Eliminiere die Crew. Bleibe unentdeckt."
-                    my_player.my_assigned_tasks = [] 
+                elif base_team_byte == 2:
+                    my_player.role = "Independent"
                 else:
                     my_player.role = "Crewmate"
-                    my_player.role_desc = "Erledige alle Aufgaben und finde die Imposter."
+                my_player.role_key = role_key
+
+                if role_key is not None:
+                    info = roles.ROLES[role_key]
+                    my_player.role_display_name = info["name"]
+                    my_player.role_desc = info["desc"]
+                    my_player.role_image = get_role_image(role_key, ROLE_REVEAL_SIZE)
+                else:
+                    my_player.role_image = None
+                    if my_player.role == "Imposter":
+                        my_player.role_display_name = "Imposter"
+                        my_player.role_desc = "Eliminiere die Crew. Bleibe unentdeckt."
+                    elif my_player.role == "Independent":
+                        my_player.role_display_name = "Eigenständig"
+                        my_player.role_desc = "Verfolge dein eigenes, geheimes Ziel."
+                    else:
+                        my_player.role_display_name = "Crewmate"
+                        my_player.role_desc = "Erledige alle Aufgaben und finde die Imposter."
+
+                # Rollenspezifische lokale Zähler/Fundpunkte zurücksetzen bzw. neu aufsetzen
+                laurin_uses_left = roles.max_uses_of(role_key) if role_key == "laurin" else 0
+                pleschbergsteiger_uses_left = roles.max_uses_of(role_key) if role_key == "pleschbergsteiger" else 0
+                yoshi_finds = 0
+                yoshi_reveals_left = 0
+                # NEU: Fund-/Sammelpunkte werden zufaellig INNERHALB der Raeume verteilt
+                # (siehe pick_item_spots) - nie ausserhalb der Map oder in einer Wand.
+                yoshi_find_points = pick_item_spots(YOSHI_FIND_LIMIT) if role_key == "yoshi" else []
+                tappeihnachtsmann_uses_left = roles.max_uses_of(role_key) if role_key == "tappeihnachtsmann" else 0
+                tappeihnachtsmann_find_points = pick_item_spots(5) if role_key == "tappeihnachtsmann" else []
+                raphi_collected = 0
+                raphi_collect_points = pick_item_spots(10) if role_key == "raphi" else []
+                # Die Imposter-Teamliste kommt separat per Paket 15 und gilt nur fuer Imposter
+                my_imposter_teammates = []
+
+                if my_player.role == "Imposter" or my_player.role == "Independent":
+                    my_player.my_assigned_tasks = []
+                    my_player.my_completed_tasks = []
+                elif role_key == "raphi":
+                    my_player.my_assigned_tasks = []
+                    my_player.my_completed_tasks = []
+                else:
                     available_indices = list(range(len(TASK_TEMPLATES)))
-                    import random
                     my_player.my_assigned_tasks = random.sample(available_indices, min(10, len(available_indices)))
                     my_player.my_completed_tasks = []
 
-            elif packet_type == 12: 
+            # NEU: Paket 15 - Liste der Mit-Imposter. Wird vom Server ausschliesslich an die
+            # Imposter selbst geschickt, damit sie ihre Teammates kennen (und nicht killen).
+            elif packet_type == 15:
+                num_mates = struct.unpack("!B", sock.recv(1))[0]
+                my_imposter_teammates = []
+                for _ in range(num_mates):
+                    mate_id = struct.unpack("!B", sock.recv(1))[0]
+                    if mate_id != my_id:
+                        my_imposter_teammates.append(mate_id)
+
+            # NEU: Sync der vom Host aktivierten Rollen (auch für Nicht-Host-Clients zur Anzeige)
+            elif packet_type == 14:
+                mask = struct.unpack("!I", sock.recv(4))[0]
+                enabled_roles = set(roles.keys_from_bitmask(mask))
+
+            elif packet_type == 12:
                 imposter_count = struct.unpack("!B", sock.recv(1))[0]
 
             elif packet_type == 21: 
@@ -364,23 +748,30 @@ def receive_data(sock):
                 dead_players.clear()
                 dead_bodies.clear()
                 player_facing_left.clear()
+                player_walk_phase.clear()
+                player_last_move_time.clear()
+                my_imposter_teammates = []
+                show_role_info = False
                 my_player.rect.x = lobby_spawn_rects[my_id % len(lobby_spawn_rects)].x
                 my_player.rect.y = lobby_spawn_rects[my_id % len(lobby_spawn_rects)].y
                 try: sock.sendall(struct.pack('!Bii', 2, int(my_player.rect.x), int(my_player.rect.y)))
                 except: pass
                 
             elif packet_type == 31:
-                dead_id = struct.unpack("!B", sock.recv(1))[0]
+                dead_id, no_corpse, weapon_id = struct.unpack("!BBB", sock.recv(3))
                 dead_players.add(dead_id)
                 if dead_id == my_id:
                     my_player.is_dead = True
-                # Im Meeting rausgevotete Spieler hinterlassen keine Leiche (wie im Original-Spiel) -
+                    if vladimir_active:
+                        ghost_intro_timer = VLADIMIR_INTRO_DURATION
+                # Im Meeting rausgevotete Spieler hinterlassen keine Leiche (wie im Original-Spiel),
+                # genauso wie Steinermikes Opfer (no_corpse) oder Evelyns Fensterfalle -
                 # nur ein "echter" Mord außerhalb eines Meetings erzeugt eine meldbare Leiche.
-                if not meeting_active:
+                if not meeting_active and not no_corpse:
                     if dead_id == my_id:
-                        dead_bodies[dead_id] = (my_player.rect.x, my_player.rect.y)
+                        dead_bodies[dead_id] = (my_player.rect.x, my_player.rect.y, weapon_id)
                     elif dead_id in other_players:
-                        dead_bodies[dead_id] = (other_players[dead_id][0], other_players[dead_id][1])
+                        dead_bodies[dead_id] = (other_players[dead_id][0], other_players[dead_id][1], weapon_id)
 
             elif packet_type == 32:
                 num_imps = struct.unpack("!B", sock.recv(1))[0]
@@ -429,7 +820,53 @@ def receive_data(sock):
                     my_player.rect.y = spawnpoints[my_id].y
                 try: sock.sendall(struct.pack('!Bii', 2, int(my_player.rect.x), int(my_player.rect.y)))
                 except: pass
-                
+
+            # ===== ROLLEN-FÄHIGKEITEN =====
+
+            # Evelyn: Fenster-Sabotage ist jetzt aktiv
+            elif packet_type == 61:
+                window_hazard_until = time.time() + EVELYN_HAZARD_DURATION
+                window_zone_timer = 0.0
+
+            # Vogelscheicher: Attrappen-Position eines anderen Spielers
+            elif packet_type == 69:
+                owner_id, dx, dy = struct.unpack("!Bii", sock.recv(9))
+                decoys[owner_id] = [dx, dy, time.time() + VOGELSCHEICHER_INVISIBLE_DURATION]
+
+            # Pleschbergsteiger: ein Geist wurde wiederbelebt
+            elif packet_type == 74:
+                revived_id = struct.unpack("!B", sock.recv(1))[0]
+                dead_players.discard(revived_id)
+                if revived_id in dead_bodies:
+                    del dead_bodies[revived_id]
+                if revived_id == my_id:
+                    my_player.is_dead = False
+
+            # Yoshi: Antwort auf die Rollen-Aufdeckung
+            elif packet_type == 76:
+                target_id, team_byte, target_role_id = struct.unpack("!BBB", sock.recv(3))
+                team_str = {0: "Besatzung", 1: "Imposter", 2: "Eigenständig"}.get(team_byte, "?")
+                revealed_key = roles.role_key_of(target_role_id)
+                role_name = roles.ROLES[revealed_key]["name"] if revealed_key is not None else team_str
+                yoshi_reveal_result = (target_id, team_str, role_name)
+                yoshi_reveal_timer = 6.0
+
+            # Tappeihnachtsmann: Unsterblichkeit ist jetzt für alle aktiv
+            elif packet_type == 78:
+                immortal_until = time.time() + IMMORTALITY_DURATION_CLIENT
+                immortal_banner_timer = IMMORTALITY_DURATION_CLIENT
+
+            # Ramona: Rechte-Update eines Spielers
+            elif packet_type == 80:
+                target_id, new_rights = struct.unpack("!BB", sock.recv(2))
+                ramona_others_rights[target_id] = new_rights
+
+            # Eigenständig gewinnt (Ramona)
+            elif packet_type == 82:
+                winner_id = struct.unpack("!B", sock.recv(1))[0]
+                independent_winner_id = winner_id
+                state = "independent_win"
+
             elif packet_type == 23:  # Erweitere den bestehenden Reset
                 game_started = False
                 state = "lobby"
@@ -634,6 +1071,8 @@ chat_font = pygame.font.SysFont("arial", 18)
 info_text1 = small_font.render(f"Bewegung: WASD", True, (255, 255, 255))
 info_text2 = small_font.render(f"Map öffnen/schließen: M", True, (255, 255, 255))
 info_text3 = small_font.render(f"Benutzen/Interagieren/Kill: E", True, (255, 255, 255))
+info_text4 = small_font.render(f"Rollen-Fähigkeit: F", True, (255, 255, 255))
+info_text5 = small_font.render(f"Rolle nachschlagen: R", True, (255, 255, 255))
 
 ip_input = TextInput(WIDTH // 2 - 175, HEIGHT // 2 - 100, 350, 60, small_font)
 name_input = TextInput(WIDTH // 2 - 175, HEIGHT // 2 + 20, 350, 60, small_font)
@@ -649,6 +1088,363 @@ def draw_menu():
     connect_txt = small_font.render("ENTER = CONNECT", True, (100, 255, 100))
     screen.blit(connect_txt, (WIDTH // 2 - connect_txt.get_width() // 2, HEIGHT // 2 + 120))
 
+def role_counts(enabled_set):
+    friendly_n = sum(1 for k in enabled_set if roles.team_of(k) == roles.TEAM_CREW)
+    enemy_n = sum(1 for k in enabled_set if roles.team_of(k) == roles.TEAM_IMPOSTOR)
+    independent_n = sum(1 for k in enabled_set if roles.team_of(k) == roles.TEAM_INDEPENDENT)
+    return friendly_n, enemy_n, independent_n
+
+def max_imposters_for(n_players):
+    """Wie viele Imposter maximal einstellbar sind: es muss immer mindestens ein
+    Crewmate uebrig bleiben UND es muss mehr freundliche als feindliche Spieler geben."""
+    if n_players < 3:
+        return 1
+    return max(1, min(MAX_IMPOSTERS, (n_players - 1) // 2))
+
+def role_setup_status(enabled_set, n_players, n_imposters):
+    """Prueft die Rollen-Konfiguration des Hosts vor dem Start.
+
+    Regeln (aus der Aufgabenstellung):
+      - Mindestens ein Imposter bzw. eine feindliche Rolle ist Pflicht.
+      - Mindestens ein Crewmate ist Pflicht.
+      - Es muss mehr freundliche als feindliche Spieler geben; Imposter zaehlen dabei
+        komplett zur feindlichen Seite (auch die ohne eigene Spezialrolle).
+      - Feindliche Spezialrollen belegen Imposter-Plaetze, es kann also nie mehr
+        feindliche Spezialrollen geben als eingestellte Imposter.
+      - Jede Spezialrolle wird hoechstens einmal vergeben, alle Rollen zusammen duerfen
+        die Spielerzahl nicht ueberschreiten.
+
+    Rueckgabe: (ok, meldung)"""
+    friendly_n, enemy_n, independent_n = role_counts(enabled_set)
+
+    if n_players < 2:
+        return False, "Zu wenige Spieler verbunden."
+    if n_imposters < 1:
+        return False, "Mindestens ein Imposter ist Pflicht."
+    if enemy_n > n_imposters:
+        return False, f"Zu viele feindliche Rollen ({enemy_n}) fuer {n_imposters} Imposter."
+
+    # Eigenstaendige bekommen einen eigenen Platz, aber nur bei genug Spielern
+    ind_slots = independent_n if n_players >= RAMONA_MIN_PLAYERS_CLIENT else 0
+    crew_slots = n_players - n_imposters - ind_slots
+    if crew_slots < 1:
+        return False, "Mindestens ein Crewmate ist Pflicht - zu wenige Spieler."
+    if crew_slots <= n_imposters:
+        return False, "Es muessen mehr freundliche als feindliche Spieler sein."
+    if friendly_n > crew_slots:
+        return False, f"Zu viele freundliche Rollen ({friendly_n}) fuer {crew_slots} Besatzungsplaetze."
+    return True, "Konfiguration in Ordnung."
+
+def current_role_setup_status():
+    return role_setup_status(enabled_roles, max(1, len(player_names)), imposter_count)
+
+def get_role_select_layout():
+    """Liefert Spalten-Layout (Team-Überschrift + je Rolle ein Zeilen-Rect + Checkbox-Rect)
+    sowie den Zurück-Button. Wird von draw_role_select() UND dem Klick-Handler benutzt,
+    analog zu get_meeting_layout()."""
+    columns = [
+        (roles.TEAM_IMPOSTOR, "FEINDLICH", (255, 90, 90)),
+        (roles.TEAM_CREW, "FREUNDLICH", (100, 255, 130)),
+        (roles.TEAM_INDEPENDENT, "EIGENSTÄNDIG", (255, 210, 90)),
+    ]
+    col_w = min(460, (WIDTH - 160) // 3)
+    total_w = col_w * 3 + 80
+    start_x = (WIDTH - total_w) // 2
+    start_y = 200
+    # Zeilenhoehe an die Bildschirmhoehe anpassen, damit die laengste Spalte nicht
+    # in den ZURUECK-Button unten laeuft
+    max_rows = max(len(roles.keys_by_team(team)) for team, _label, _color in columns)
+    avail_h = max(60, (HEIGHT - 120) - start_y)
+    row_h = max(34, min(52, avail_h // max(1, max_rows)))
+
+    rows = []  # (role_key, row_rect, checkbox_rect)
+    headers = []  # (text, color, x, y)
+    for i, (team, label, color) in enumerate(columns):
+        col_x = start_x + i * (col_w + 40)
+        headers.append((label, color, col_x, start_y - 40))
+        for j, key in enumerate(roles.keys_by_team(team)):
+            row_rect = pygame.Rect(col_x, start_y + j * row_h, col_w, row_h - 8)
+            checkbox_rect = pygame.Rect(col_x + col_w - 36, row_rect.y + (row_rect.height - 26) // 2, 26, 26)
+            rows.append((key, row_rect, checkbox_rect))
+
+    back_rect = pygame.Rect(40, HEIGHT - 100, 200, 60)
+    return rows, headers, back_rect
+
+def draw_role_select():
+    screen.fill((18, 18, 26))
+    title = menu_font.render("ROLLEN AUSWÄHLEN", True, (255, 255, 255))
+    screen.blit(title, (WIDTH // 2 - title.get_width() // 2, 40))
+
+    friendly_n, enemy_n, independent_n = role_counts(enabled_roles)
+    valid, status_msg = current_role_setup_status()
+    count_color = (100, 255, 130) if valid else (255, 90, 90)
+    count_text = small_font.render(
+        f"Freundlich: {friendly_n}   |   Feindlich: {enemy_n}   |   Eigenständig: {independent_n}"
+        f"   |   Imposter: {imposter_count}   |   Spieler: {len(player_names)}",
+        True, count_color)
+    screen.blit(count_text, (WIDTH // 2 - count_text.get_width() // 2, 100))
+    warn_text = chat_font.render(status_msg, True, count_color)
+    screen.blit(warn_text, (WIDTH // 2 - warn_text.get_width() // 2, 132))
+    hint_text = chat_font.render(
+        "Jede Spezialrolle wird höchstens einmal vergeben - nur die Imposter-Anzahl ist einstellbar. Der Rest ist Besatzung.",
+        True, (170, 170, 180))
+    screen.blit(hint_text, (WIDTH // 2 - hint_text.get_width() // 2, 154))
+
+    rows, headers, back_rect = get_role_select_layout()
+
+    for label, color, hx, hy in headers:
+        h_text = small_font.render(label, True, color)
+        screen.blit(h_text, (hx, hy))
+
+    for key, row_rect, checkbox_rect in rows:
+        is_on = key in enabled_roles
+        info = roles.ROLES[key]
+        row_bg = (40, 45, 55) if not is_on else (35, 60, 45)
+        pygame.draw.rect(screen, row_bg, row_rect, border_radius=6)
+
+        thumb = get_role_image(key, ROLE_THUMB_SIZE)
+        tx = row_rect.x + 6
+        if thumb:
+            screen.blit(thumb, (tx, row_rect.y + (row_rect.height - ROLE_THUMB_SIZE) // 2))
+            name_x = tx + ROLE_THUMB_SIZE + 10
+        else:
+            name_x = tx
+
+        name_text = chat_font.render(info["name"], True, (255, 255, 255))
+        screen.blit(name_text, (name_x, row_rect.y + 2))
+        # Kurzbeschreibung direkt in der Zeile, damit der Host weiss was die Rolle kann
+        desc_short = info["desc"]
+        while desc_short and chat_font.size(desc_short)[0] > (checkbox_rect.x - name_x - 10):
+            desc_short = desc_short[:-2]
+        if desc_short != info["desc"]:
+            desc_short = desc_short.rstrip() + "..."
+        desc_text = proximity_font.render(desc_short, True, (180, 185, 195))
+        screen.blit(desc_text, (name_x, row_rect.y + 22))
+
+        box_color = (100, 255, 130) if is_on else (90, 90, 90)
+        pygame.draw.rect(screen, box_color, checkbox_rect, border_radius=4)
+        pygame.draw.rect(screen, (255, 255, 255), checkbox_rect, 2, border_radius=4)
+        if is_on:
+            pygame.draw.line(screen, (0, 0, 0), (checkbox_rect.x + 5, checkbox_rect.centery), (checkbox_rect.centerx - 1, checkbox_rect.bottom - 6), 3)
+            pygame.draw.line(screen, (0, 0, 0), (checkbox_rect.centerx - 1, checkbox_rect.bottom - 6), (checkbox_rect.right - 4, checkbox_rect.y + 5), 3)
+
+    pygame.draw.rect(screen, (200, 60, 60), back_rect, border_radius=10)
+    back_text = small_font.render("ZURÜCK", True, (255, 255, 255))
+    screen.blit(back_text, (back_rect.centerx - back_text.get_width() // 2, back_rect.centery - back_text.get_height() // 2))
+
+def wrap_text_render(text, font, color, max_width):
+    words = text.split(" ")
+    lines = []
+    current = ""
+    for w in words:
+        trial = (current + " " + w).strip()
+        if font.size(trial)[0] <= max_width:
+            current = trial
+        else:
+            if current:
+                lines.append(current)
+            current = w
+    if current:
+        lines.append(current)
+    return [font.render(line, True, color) for line in lines]
+
+def team_label():
+    """NEU: Kurzer Text + Farbe fuer die Seite, auf der man steht."""
+    if my_player.role == "Imposter":
+        return "Feindlich - Imposter", (255, 90, 90)
+    if my_player.role == "Independent":
+        return "Eigenständig - du gewinnst allein", (255, 210, 90)
+    return "Freundlich - Besatzung", (100, 255, 130)
+
+def imposter_teammate_names():
+    """NEU: Namen der anderen Imposter (leer, wenn man kein Imposter ist)."""
+    return [player_names.get(pid, f"Spieler {pid}") for pid in my_imposter_teammates]
+
+def get_role_info_button_rect():
+    """NEU: Button am rechten Bildschirmrand, ueber den man jederzeit die eigene
+    Rollenbeschreibung nachlesen kann."""
+    return pygame.Rect(WIDTH - 66, HEIGHT // 2 - 60, 52, 120)
+
+def draw_role_info_button():
+    btn = get_role_info_button_rect()
+    bg = (90, 110, 210) if not show_role_info else (60, 75, 150)
+    pygame.draw.rect(screen, bg, btn, border_radius=10)
+    pygame.draw.rect(screen, (230, 235, 255), btn, 2, border_radius=10)
+
+    thumb = get_role_image(my_player.role_key, ROLE_THUMB_SIZE) if my_player.role_key else None
+    if thumb:
+        screen.blit(thumb, (btn.centerx - ROLE_THUMB_SIZE // 2, btn.y + 8))
+        label_y = btn.y + 12 + ROLE_THUMB_SIZE
+    else:
+        label_y = btn.y + 14
+
+    # "ROLLE" senkrecht, damit es in den schmalen Button passt
+    label = proximity_font.render("ROLLE", True, (255, 255, 255))
+    label = pygame.transform.rotate(label, 90)
+    screen.blit(label, (btn.centerx - label.get_width() // 2, label_y))
+    key_hint = proximity_font.render("R", True, (230, 235, 255))
+    screen.blit(key_hint, (btn.centerx - key_hint.get_width() // 2, btn.bottom - 16))
+
+def draw_role_info_panel():
+    """NEU: Zeigt Rollenbild, Name, Seite und Beschreibung - jederzeit im Spiel
+    ueber den Button am Bildschirmrand (oder Taste R) aufrufbar."""
+    panel_w = min(820, WIDTH - 120)
+    panel_h = min(560, HEIGHT - 120)
+    panel = pygame.Rect((WIDTH - panel_w) // 2, (HEIGHT - panel_h) // 2, panel_w, panel_h)
+
+    overlay = pygame.Surface((WIDTH, HEIGHT))
+    overlay.set_alpha(170)
+    overlay.fill((0, 0, 0))
+    screen.blit(overlay, (0, 0))
+
+    pygame.draw.rect(screen, (18, 20, 28), panel, border_radius=14)
+    pygame.draw.rect(screen, (90, 110, 200), panel, 3, border_radius=14)
+
+    y = panel.y + 24
+    title = small_font.render("DEINE ROLLE", True, (200, 210, 255))
+    screen.blit(title, (panel.centerx - title.get_width() // 2, y))
+    y += title.get_height() + 12
+
+    if my_player.role_image:
+        screen.blit(my_player.role_image, (panel.centerx - ROLE_REVEAL_SIZE // 2, y))
+        y += ROLE_REVEAL_SIZE + 12
+
+    name_txt = menu_font.render(my_player.role_display_name, True, (255, 255, 255))
+    screen.blit(name_txt, (panel.centerx - name_txt.get_width() // 2, y))
+    y += name_txt.get_height() + 6
+
+    tl_text, tl_color = team_label()
+    team_txt = small_font.render(tl_text, True, tl_color)
+    screen.blit(team_txt, (panel.centerx - team_txt.get_width() // 2, y))
+    y += team_txt.get_height() + 12
+
+    for line_surf in wrap_text_render(my_player.role_desc, chat_font, (230, 230, 235), panel_w - 60):
+        screen.blit(line_surf, (panel.centerx - line_surf.get_width() // 2, y))
+        y += line_surf.get_height() + 3
+
+    mates = imposter_teammate_names()
+    if mates:
+        y += 10
+        mate_txt = chat_font.render("Deine Mit-Imposter: " + ", ".join(mates), True, (255, 120, 120))
+        screen.blit(mate_txt, (panel.centerx - mate_txt.get_width() // 2, y))
+        y += mate_txt.get_height() + 2
+        hint_txt = proximity_font.render("Ihr könnt euch gegenseitig nicht töten.", True, (200, 140, 140))
+        screen.blit(hint_txt, (panel.centerx - hint_txt.get_width() // 2, y))
+
+    close_txt = proximity_font.render("R oder Klick auf den Button schließt dieses Fenster", True, (150, 155, 170))
+    screen.blit(close_txt, (panel.centerx - close_txt.get_width() // 2, panel.bottom - 26))
+
+def draw_ability_hud():
+    """Zeigt rollenspezifische Cooldowns/Zähler links unten und globale Banner (Unsterblichkeit,
+    Fenster-Gefahr) oben mittig an. Rein lesend - verändert keinen Zustand."""
+    rk = my_player.role_key
+
+    # Steuerungs-Hinweise unterhalb der Fortschrittsleiste (die liegt bei y=170..190)
+    screen.blit(info_text4, (20, 200))
+    screen.blit(info_text5, (20, 232))
+    y = 272
+
+    if my_player.role == "Imposter" and not my_player.is_dead:
+        cd_txt = "Kill bereit!" if kill_cooldown_remaining <= 0 else f"Kill-Cooldown: {kill_cooldown_remaining:.1f}s"
+        screen.blit(proximity_font.render(cd_txt, True, (255, 180, 180)), (20, y)); y += 20
+
+    # NEU: Imposter sehen dauerhaft, wer noch im Team ist (und koennen sich nicht gegenseitig killen)
+    mates = imposter_teammate_names()
+    if mates:
+        screen.blit(proximity_font.render("Mit-Imposter: " + ", ".join(mates), True, (255, 120, 120)), (20, y)); y += 20
+
+    if rk == "monika":
+        txt = "F: Flagge platzieren" if not monika_flag_used else f"Rückruf in {max(0.0, monika_recall_timer):.1f}s"
+        screen.blit(proximity_font.render(txt, True, (255, 220, 150)), (20, y)); y += 20
+
+    elif rk == "stroblpeter":
+        if stroblpeter_marked_id is None:
+            txt = "F: Spieler markieren"
+        elif not stroblpeter_ready_to_strike:
+            txt = f"Markiert - bereit in {max(0.0, stroblpeter_mark_timer):.1f}s"
+        else:
+            txt = "F: Zuschlagen!"
+        screen.blit(proximity_font.render(txt, True, (255, 220, 150)), (20, y)); y += 20
+
+    elif rk == "evelyn":
+        txt = "F: Fenster-Sabotage" if evelyn_cooldown_remaining <= 0 else f"Sabotage-Cooldown: {evelyn_cooldown_remaining:.1f}s"
+        screen.blit(proximity_font.render(txt, True, (255, 220, 150)), (20, y)); y += 20
+
+    elif rk == "laurin":
+        screen.blit(proximity_font.render(f"F: Task sabotieren ({laurin_uses_left} übrig)", True, (255, 220, 150)), (20, y)); y += 20
+
+    elif rk == "david":
+        marked_name = player_names.get(david_marked_id) if david_marked_id is not None else None
+        txt = "F: Spieler fürs Verwürfeln markieren" + (f" (markiert: {marked_name})" if marked_name else "")
+        screen.blit(proximity_font.render(txt, True, (255, 220, 150)), (20, y)); y += 20
+
+    elif rk == "noah":
+        if noah_trap_cooldown > 0:
+            txt = f"Fallen-Cooldown: {noah_trap_cooldown:.1f}s ({len(noah_traps)}/{NOAH_TRAP_LIMIT} gelegt)"
+        else:
+            txt = f"F: Falle platzieren ({len(noah_traps)}/{NOAH_TRAP_LIMIT} gelegt)"
+        screen.blit(proximity_font.render(txt, True, (255, 220, 150)), (20, y)); y += 20
+
+    elif rk == "vogelscheicher":
+        remaining = vogelscheicher_invisible_until - time.time()
+        txt = "F: Attrappe + Unsichtbarkeit" if remaining <= 0 else f"Unsichtbar noch {remaining:.1f}s"
+        screen.blit(proximity_font.render(txt, True, (150, 220, 255)), (20, y)); y += 20
+
+    elif rk == "pleschbergsteiger":
+        screen.blit(proximity_font.render(f"F bei Geist: Wiederbeleben ({pleschbergsteiger_uses_left} übrig)", True, (150, 220, 255)), (20, y)); y += 20
+
+    elif rk == "yoshi":
+        txt = f"F beim Standard: einsammeln ({yoshi_finds}/{YOSHI_FIND_LIMIT})"
+        if yoshi_reveals_left > 0:
+            txt += f"  |  F bei Spieler: Rolle aufdecken ({yoshi_reveals_left}x)"
+        screen.blit(proximity_font.render(txt, True, (150, 220, 255)), (20, y)); y += 20
+        if yoshi_reveal_result is not None and yoshi_reveal_timer > 0:
+            target_id, team_str, role_name = yoshi_reveal_result
+            reveal_txt = small_font.render(f"{player_names.get(target_id, '?')} ist: {role_name} ({team_str})", True, (255, 255, 100))
+            screen.blit(reveal_txt, (WIDTH // 2 - reveal_txt.get_width() // 2, 200))
+
+    elif rk == "tappeihnachtsmann":
+        screen.blit(proximity_font.render(f"F beim Geschenk: einsammeln ({len(tappeihnachtsmann_find_points)} übrig)", True, (150, 220, 255)), (20, y)); y += 20
+
+    elif rk == "raphi":
+        screen.blit(proximity_font.render(f"F bei der Flasche: einsammeln ({raphi_collected}/10)", True, (150, 220, 255)), (20, y)); y += 20
+
+    elif rk == "ramona":
+        forge_remaining = RAMONA_FORGE_COOLDOWN_CLIENT - (time.time() - ramona_last_forge)
+        txt = "F bei Spieler: Unterschrift fälschen" if forge_remaining <= 0 else f"Fälschen-Cooldown: {forge_remaining:.1f}s"
+        screen.blit(proximity_font.render(txt, True, (255, 210, 90)), (20, y)); y += 20
+        if ramona_others_rights:
+            rights_str = ", ".join(f"{player_names.get(pid, '?')}:{v}" for pid, v in ramona_others_rights.items())
+            screen.blit(proximity_font.render(f"Rechte -> {rights_str}", True, (255, 210, 90)), (20, y)); y += 20
+        if ramona_stand_timer > 0:
+            screen.blit(proximity_font.render(f"Stehe am Regal: {ramona_stand_timer:.1f}/{RAMONA_WIN_STAND_TIME:.0f}s", True, (100, 255, 130)), (20, y)); y += 20
+
+    elif rk == "poeschl_froeschl":
+        my_center = my_player.rect.center
+        nearest, nearest_dist = None, None
+        for d_id, (dx, dy, _w) in dead_bodies.items():
+            body_center = (dx + PLAYER_SIZE // 2, dy + PLAYER_SIZE // 2)
+            dist = math.hypot(my_center[0] - body_center[0], my_center[1] - body_center[1])
+            if nearest_dist is None or dist < nearest_dist:
+                nearest_dist, nearest = dist, body_center
+        if nearest is not None:
+            angle = math.atan2(nearest[1] - my_center[1], nearest[0] - my_center[0])
+            ax, ay = WIDTH // 2, 200
+            ex, ey = ax + math.cos(angle) * 30, ay + math.sin(angle) * 30
+            pygame.draw.line(screen, (255, 200, 0), (ax, ay), (ex, ey), 4)
+            pygame.draw.circle(screen, (255, 200, 0), (int(ex), int(ey)), 6)
+            screen.blit(proximity_font.render("Leiche in der Nähe!", True, (255, 200, 0)), (ax - 60, ay + 20))
+
+    # Globale Banner (für alle Spieler sichtbar, unabhängig von der eigenen Rolle)
+    banner_y = 170
+    if immortal_banner_timer > 0:
+        banner = small_font.render(f"UNSTERBLICHKEIT AKTIV ({immortal_banner_timer:.1f}s)", True, (255, 230, 80))
+        screen.blit(banner, (WIDTH // 2 - banner.get_width() // 2, banner_y))
+        banner_y += 30
+    if time.time() < window_hazard_until:
+        banner = small_font.render("GEFAHR: Fenster offen - nicht in Fensterräumen aufhalten!", True, (255, 90, 90))
+        screen.blit(banner, (WIDTH // 2 - banner.get_width() // 2, banner_y))
+
 def draw_lobby():
     camera_x = my_player.rect.x - (INTERNAL_SIZE // 2) + (PLAYER_SIZE // 2)
     camera_y = my_player.rect.y - (INTERNAL_SIZE // 2) + (PLAYER_SIZE // 2)
@@ -661,7 +1457,7 @@ def draw_lobby():
         if enemy_img:
             if player_facing_left.get(p_id):
                 enemy_img = pygame.transform.flip(enemy_img, True, False)
-            internal_surface.blit(enemy_img, (pos[0] - camera_x, pos[1] - camera_y))
+            internal_surface.blit(enemy_img, (pos[0] - camera_x, pos[1] - camera_y + get_walk_offset(p_id)))
             e_name = player_names.get(p_id, f"Player {p_id}")
             name_text = name_font.render(e_name, True, (255, 255, 255))
             internal_surface.blit(name_text, ((pos[0] - camera_x) + (PLAYER_SIZE // 2) - (name_text.get_width() // 2), (pos[1] - camera_y) - 16))
@@ -682,17 +1478,35 @@ def draw_lobby():
     imp_text = small_font.render(f"Imposter: {imposter_count}", True, (255, 255, 255))
     screen.blit(imp_text, (WIDTH // 2 - imp_text.get_width() // 2, HEIGHT - 150))
 
+    friendly_n, enemy_n, independent_n = role_counts(enabled_roles)
+    roles_valid, roles_status_msg = current_role_setup_status()
+    rc_color = (100, 255, 130) if roles_valid else (255, 90, 90)
+    if enabled_roles:
+        rc_text = small_font.render(
+            f"Rollen aktiv: {friendly_n} freundlich / {enemy_n} feindlich / {independent_n} eigenständig",
+            True, rc_color)
+        screen.blit(rc_text, (WIDTH // 2 - rc_text.get_width() // 2, HEIGHT - 190))
+    status_text = chat_font.render(roles_status_msg, True, rc_color)
+    screen.blit(status_text, (WIDTH // 2 - status_text.get_width() // 2, HEIGHT - 215))
+
     if my_id == host_id:
         btn = pygame.Rect(WIDTH - 240, HEIGHT - 100, 200, 60)
-        pygame.draw.rect(screen, (0, 220, 100), btn, border_radius=10)
-        txt = small_font.render("START", True, (0, 0, 0))
+        btn_color = (0, 220, 100) if roles_valid else (90, 90, 90)
+        # (roles_valid stammt aus current_role_setup_status() weiter oben)
+        pygame.draw.rect(screen, btn_color, btn, border_radius=10)
+        txt = small_font.render("START", True, (0, 0, 0) if roles_valid else (180, 180, 180))
         screen.blit(txt, (btn.centerx - txt.get_width() // 2, btn.centery - txt.get_height() // 2))
+
+        btn_roles = pygame.Rect(40, HEIGHT - 100, 200, 60)
+        pygame.draw.rect(screen, (70, 100, 220), btn_roles, border_radius=10)
+        roles_txt = small_font.render("ROLLEN", True, (255, 255, 255))
+        screen.blit(roles_txt, (btn_roles.centerx - roles_txt.get_width() // 2, btn_roles.centery - roles_txt.get_height() // 2))
 
         btn_minus = pygame.Rect(WIDTH // 2 - 100, HEIGHT - 155, 40, 40)
         btn_plus = pygame.Rect(WIDTH // 2 + 60, HEIGHT - 155, 40, 40)
         pygame.draw.rect(screen, (100, 100, 100), btn_minus, border_radius=5)
         pygame.draw.rect(screen, (100, 100, 100), btn_plus, border_radius=5)
-        
+
         minus_txt = small_font.render("-", True, (255, 255, 255))
         plus_txt = small_font.render("+", True, (255, 255, 255))
         screen.blit(minus_txt, (btn_minus.centerx - minus_txt.get_width() // 2, btn_minus.centery - minus_txt.get_height() // 2))
@@ -744,7 +1558,11 @@ minimap_bg = pygame.Surface((MINIMAP_WIDTH, MINIMAP_HEIGHT))
 minimap_bg.blit(pygame.transform.scale(floor_img, (MINIMAP_WIDTH, MINIMAP_HEIGHT)), (0, 0))
 minimap_bg.blit(pygame.transform.scale(walls_img, (MINIMAP_WIDTH, MINIMAP_HEIGHT)), (0, 0))
 
-hitboxes, vents, plants, tasks_hitboxes, mapwalls, spawnpoints, emergency_hitboxes = load_hitboxes(os.path.join(base_path, "Hitboxes.json"))
+hitboxes, vents, plants, tasks_hitboxes, mapwalls, spawnpoints, emergency_hitboxes, window_zones, room_rects = load_hitboxes(os.path.join(base_path, "Hitboxes.json"))
+
+# NEU: Ramonas Siegzone ("Regal beim Spawn") - es gibt keine eigene Karten-Zone dafür,
+# daher wird der bereits vorhandene erste Spawnpunkt vergrößert wiederverwendet.
+RAMONA_WIN_ZONE = spawnpoints[0].inflate(80, 80) if spawnpoints else pygame.Rect(0, 0, 50, 50)
 
 for i, rect in enumerate(tasks_hitboxes):
     if i < len(TASK_TEMPLATES):
@@ -784,7 +1602,72 @@ while running:
     if meeting_cooldown > 0:
         meeting_cooldown = max(0.0, meeting_cooldown - dt)
 
+    # NEU: Lokale Rollen-Fähigkeits-Timer laufend runterzählen
+    if state == "game" and game_started:
+        if kill_cooldown_remaining > 0:
+            kill_cooldown_remaining = max(0.0, kill_cooldown_remaining - dt)
+        if evelyn_cooldown_remaining > 0:
+            evelyn_cooldown_remaining = max(0.0, evelyn_cooldown_remaining - dt)
+        if noah_trap_cooldown > 0:
+            noah_trap_cooldown = max(0.0, noah_trap_cooldown - dt)
+        if immortal_banner_timer > 0:
+            immortal_banner_timer = max(0.0, immortal_banner_timer - dt)
+        if yoshi_reveal_timer > 0:
+            yoshi_reveal_timer = max(0.0, yoshi_reveal_timer - dt)
+        if ghost_intro_timer > 0:
+            ghost_intro_timer = max(0.0, ghost_intro_timer - dt)
+
+        # Monika: Marker platziert -> alle paar Sekunden automatisch zurückteleportieren
+        if my_player.role_key == "monika" and monika_flag_pos is not None and not my_player.is_dead:
+            monika_recall_timer -= dt
+            if monika_recall_timer <= 0:
+                monika_recall_timer = MONIKA_RECALL_INTERVAL
+                my_player.rect.centerx, my_player.rect.centery = monika_flag_pos
+                try: sock.sendall(struct.pack('!Bii', 2, int(my_player.rect.x), int(my_player.rect.y)))
+                except: pass
+
+        # Stroblpeter: nach Ablauf der Merk-Zeit bereit zum Zuschlagen
+        if my_player.role_key == "stroblpeter" and stroblpeter_marked_id is not None and not stroblpeter_ready_to_strike:
+            stroblpeter_mark_timer -= dt
+            if stroblpeter_mark_timer <= 0:
+                stroblpeter_ready_to_strike = True
+
+        # Evelyn: Fensterfalle - Aufenthaltszeit in einer Gefahrenzone tracken
+        if time.time() < window_hazard_until and not my_player.is_dead:
+            in_zone = any(z.collidepoint(my_player.rect.center) for z in window_zones)
+            if in_zone:
+                window_zone_timer += dt
+                if window_zone_timer > EVELYN_LINGER_LIMIT:
+                    window_zone_timer = -999.0  # schon gemeldet, nicht erneut senden
+                    try: sock.sendall(struct.pack("!B", 62))
+                    except: pass
+            else:
+                window_zone_timer = 0.0
+        else:
+            window_zone_timer = 0.0
+
+        # Attrappen (Vogelscheicher) ablaufen lassen
+        for pid in list(decoys.keys()):
+            if time.time() >= decoys[pid][2]:
+                del decoys[pid]
+
+        # Ramona: Stehzeit am Regal (Spawnbereich) tracken, Sieg automatisch beanspruchen sobald
+        # alle bekannten Spieler bei 0 Rechten sind. Der Server validiert das nochmal autoritativ.
+        if my_player.role_key == "ramona" and not my_player.is_dead:
+            all_zero = bool(ramona_others_rights) and all(v <= 0 for v in ramona_others_rights.values())
+            if all_zero and RAMONA_WIN_ZONE.collidepoint(my_player.rect.center):
+                ramona_stand_timer += dt
+                if ramona_stand_timer >= RAMONA_WIN_STAND_TIME:
+                    try: sock.sendall(struct.pack("!B", 81))
+                    except: pass
+                    ramona_stand_timer = -999.0
+            else:
+                ramona_stand_timer = 0.0
+
     for event in pygame.event.get():
+        # NEU: True, sobald ein Klick vom Rollen-Info-Panel verbraucht wurde (dann nicht abstimmen)
+        role_info_click_consumed = False
+
         if event.type == pygame.QUIT:
             running = False
             pygame.quit()
@@ -800,22 +1683,51 @@ while running:
         elif state == "lobby":
             if event.type == pygame.MOUSEBUTTONDOWN and my_id == host_id:
                 btn = pygame.Rect(WIDTH - 240, HEIGHT - 100, 200, 60)
+                btn_roles = pygame.Rect(40, HEIGHT - 100, 200, 60)
                 btn_minus = pygame.Rect(WIDTH // 2 - 100, HEIGHT - 155, 40, 40)
                 btn_plus = pygame.Rect(WIDTH // 2 + 60, HEIGHT - 155, 40, 40)
-                
+
                 if btn.collidepoint(event.pos):
-                    try: sock.sendall(struct.pack("!B", 99))
-                    except: pass
+                    if current_role_setup_status()[0]:
+                        try: sock.sendall(struct.pack("!B", 99))
+                        except: pass
+                elif btn_roles.collidepoint(event.pos):
+                    state = "role_select"
                 elif btn_minus.collidepoint(event.pos):
                     if imposter_count > 1:
                         try: sock.sendall(struct.pack("!BB", 11, imposter_count - 1))
                         except: pass
                 elif btn_plus.collidepoint(event.pos):
-                    if imposter_count < 3:
+                    # Nicht mehr Imposter zulassen als es freundliche Spieler gibt
+                    if imposter_count < max_imposters_for(len(player_names)):
                         try: sock.sendall(struct.pack("!BB", 11, imposter_count + 1))
                         except: pass
 
+        elif state == "role_select":
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_q:
+                state = "lobby"
+            elif event.type == pygame.MOUSEBUTTONDOWN:
+                rows, headers, back_rect = get_role_select_layout()
+                if back_rect.collidepoint(event.pos):
+                    state = "lobby"
+                elif my_id == host_id:
+                    for key, row_rect, checkbox_rect in rows:
+                        if row_rect.collidepoint(event.pos):
+                            new_state = 0 if key in enabled_roles else 1
+                            try: sock.sendall(struct.pack("!BBB", 13, roles.role_id_of(key), new_state))
+                            except: pass
+                            break
+
         elif state == "game":
+            # NEU: Klick auf den Rollen-Button am Bildschirmrand (funktioniert auch im Meeting)
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1 and task_manager.active_task is None:
+                if get_role_info_button_rect().collidepoint(event.pos):
+                    show_role_info = not show_role_info
+                    role_info_click_consumed = True
+                elif show_role_info:
+                    show_role_info = False
+                    role_info_click_consumed = True
+
             if event.type == pygame.KEYDOWN:
                 if meeting_active:
                     # Während eines Meetings sind Tasten NUR für den Chat da - Q/M/E/Leertaste/
@@ -847,6 +1759,10 @@ while running:
                     if event.key == pygame.K_m and task_manager.active_task is None:
                         show_minimap = not show_minimap
 
+                    # NEU: Rollenbeschreibung jederzeit nachschlagen
+                    if event.key == pygame.K_r and task_manager.active_task is None:
+                        show_role_info = not show_role_info
+
                     # NEU: Pfeiltasten / AD Steuerung zum Durchwechseln, wenn man im Vent ist
                     if my_player.is_venting:
                         if event.key in [pygame.K_LEFT, pygame.K_a, pygame.K_UP, pygame.K_w]:
@@ -874,7 +1790,7 @@ while running:
                         # Liegt eine Leiche in Melde-Reichweite? (gleicher Radius wie beim Töten)
                         near_body = False
                         my_center = my_player.rect.center
-                        for body_id, (bx, by) in dead_bodies.items():
+                        for body_id, (bx, by, _weapon_id) in dead_bodies.items():
                             body_center = (bx + PLAYER_SIZE // 2, by + PLAYER_SIZE // 2)
                             if math.hypot(my_center[0] - body_center[0], my_center[1] - body_center[1]) < 60:
                                 near_body = True
@@ -884,25 +1800,24 @@ while running:
                             # Leiche melden -> Meeting starten (kein Cooldown, wie im echten Spiel)
                             try: sock.sendall(struct.pack("!BB", 40, MEETING_REASON_BODY))
                             except: pass
-                        elif at_meeting_box and meeting_cooldown <= 0 and not my_player.is_dead:
+                        elif at_meeting_box and not my_player.is_dead and (meeting_cooldown <= 0 or (my_player.role_key == "kaliyoga" and not kaliyoga_bonus_used)):
+                            if meeting_cooldown > 0:
+                                kaliyoga_bonus_used = True  # Kaliyoga: 1x Bonus-Meeting trotz eigenem Cooldown
                             try: sock.sendall(struct.pack("!BB", 40, MEETING_REASON_BUTTON))
                             except: pass
-                        elif my_player.role == "Imposter" and not my_player.is_dead:
-                            # Kill Suche
-                            closest_id = None
-                            closest_dist = 60 # Kill-Reichweite
+                        elif my_player.role == "Imposter" and not my_player.is_dead and kill_cooldown_remaining <= 0:
+                            # Kill Suche (Martin hat größere Reichweite & höheren Cooldown)
+                            kill_range = KILL_RANGE_MARTIN if my_player.role_key == "martin" else KILL_RANGE_DEFAULT
+                            kill_cd = KILL_COOLDOWN_MARTIN if my_player.role_key == "martin" else KILL_COOLDOWN_DEFAULT
                             my_center = my_player.rect.center
-                            for p_id, pos in other_players.items():
-                                if p_id not in dead_players:
-                                    e_center = (pos[0] + PLAYER_SIZE//2, pos[1] + PLAYER_SIZE//2)
-                                    dist = math.hypot(my_center[0] - e_center[0], my_center[1] - e_center[1])
-                                    if dist < closest_dist:
-                                        closest_dist = dist
-                                        closest_id = p_id
-                            
+                            # NEU: Mit-Imposter sind vom Kill ausgenommen (der Server blockt das ebenfalls)
+                            closest_id = find_nearest_player(my_center, other_players, kill_range, dead_players,
+                                                             exclude_ids=my_imposter_teammates)
+
                             if closest_id is not None:
                                 try: sock.sendall(struct.pack("!BB", 30, closest_id)) # Sende Kill-Paket
                                 except: pass
+                                kill_cooldown_remaining = kill_cd
 
                         elif my_player.role == "Crewmate":
                             # Aufgaben erledigen (auch als Geist möglich)
@@ -922,6 +1837,116 @@ while running:
                                             task_aborted = False 
                                     break
                     
+                    # NEU: Spezialfähigkeiten-Taste (F) - Aktion hängt von der zugewiesenen Rolle ab
+                    if event.key == pygame.K_f and not show_minimap and not my_player.is_venting:
+                        my_center = my_player.rect.center
+                        rk = my_player.role_key
+
+                        if rk == "monika" and not my_player.is_dead:
+                            if not monika_flag_used:
+                                monika_flag_pos = my_player.rect.center
+                                monika_flag_used = True
+                                monika_recall_timer = MONIKA_RECALL_INTERVAL
+
+                        elif rk == "stroblpeter" and not my_player.is_dead:
+                            if stroblpeter_marked_id is None:
+                                target = find_nearest_player(my_center, other_players, STROBLPETER_MARK_RANGE, dead_players,
+                                                             exclude_ids=my_imposter_teammates)
+                                if target is not None:
+                                    stroblpeter_marked_id = target
+                                    stroblpeter_mark_timer = STROBLPETER_MARK_DELAY
+                                    stroblpeter_ready_to_strike = False
+                            elif stroblpeter_ready_to_strike and stroblpeter_marked_id in other_players and stroblpeter_marked_id not in dead_players:
+                                tx, ty = other_players[stroblpeter_marked_id]
+                                my_player.rect.centerx, my_player.rect.centery = tx + PLAYER_SIZE, ty
+                                try: sock.sendall(struct.pack('!Bii', 2, int(my_player.rect.x), int(my_player.rect.y)))
+                                except: pass
+                                try: sock.sendall(struct.pack("!BB", 30, stroblpeter_marked_id))
+                                except: pass
+                                stroblpeter_marked_id = None
+                                stroblpeter_ready_to_strike = False
+
+                        elif rk == "evelyn" and not my_player.is_dead and evelyn_cooldown_remaining <= 0:
+                            try: sock.sendall(struct.pack("!B", 60))
+                            except: pass
+                            evelyn_cooldown_remaining = EVELYN_COOLDOWN
+
+                        elif rk == "laurin" and laurin_uses_left > 0:
+                            try: sock.sendall(struct.pack("!B", 63))
+                            except: pass
+                            laurin_uses_left -= 1
+
+                        elif rk == "david" and not my_player.is_dead:
+                            target = find_nearest_player(my_center, other_players, DAVID_MARK_RANGE, dead_players)
+                            if target is not None:
+                                david_marked_id = target
+                                try: sock.sendall(struct.pack("!BB", 65, target))
+                                except: pass
+
+                        elif rk == "noah" and not my_player.is_dead and noah_trap_cooldown <= 0:
+                            # Bis zu NOAH_TRAP_LIMIT Fallen, danach wird die aelteste ersetzt
+                            noah_traps.append((my_center[0], my_center[1]))
+                            if len(noah_traps) > NOAH_TRAP_LIMIT:
+                                noah_traps.pop(0)
+                            noah_trap_cooldown = NOAH_TRAP_COOLDOWN
+                            try: sock.sendall(struct.pack('!Bii', 66, int(my_center[0]), int(my_center[1])))
+                            except: pass
+
+                        elif rk == "vogelscheicher" and not my_player.is_dead:
+                            vogelscheicher_invisible_until = time.time() + VOGELSCHEICHER_INVISIBLE_DURATION
+                            try: sock.sendall(struct.pack('!Bii', 68, int(my_center[0]), int(my_center[1])))
+                            except: pass
+
+                        elif rk == "pleschbergsteiger" and pleschbergsteiger_uses_left > 0:
+                            target = find_nearest_player(my_center, other_players, PLESCHBERGSTEIGER_RANGE, dead_players, want_dead=True)
+                            if target is not None:
+                                try: sock.sendall(struct.pack("!BB", 73, target))
+                                except: pass
+                                pleschbergsteiger_uses_left -= 1
+
+                        elif rk == "yoshi" and not my_player.is_dead:
+                            # Zuerst einen danebenliegenden Standard einsammeln - jeder Fund gibt
+                            # eine Rollen-Aufdeckung. Steht man an keinem Fundpunkt, wird eine
+                            # vorhandene Aufdeckung auf den naechsten Spieler angewendet.
+                            collected = False
+                            for pt in list(yoshi_find_points):
+                                if math.hypot(my_center[0] - pt.centerx, my_center[1] - pt.centery) < YOSHI_FIND_RANGE:
+                                    yoshi_find_points.remove(pt)
+                                    yoshi_finds += 1
+                                    yoshi_reveals_left += 1
+                                    collected = True
+                                    break
+                            if not collected and yoshi_reveals_left > 0:
+                                target = find_nearest_player(my_center, other_players, DAVID_MARK_RANGE, dead_players)
+                                if target is not None:
+                                    try: sock.sendall(struct.pack("!BB", 75, target))
+                                    except: pass
+                                    yoshi_reveals_left -= 1
+
+                        elif rk == "tappeihnachtsmann" and not my_player.is_dead:
+                            for pt in list(tappeihnachtsmann_find_points):
+                                if math.hypot(my_center[0] - pt.centerx, my_center[1] - pt.centery) < TAPPEIHNACHTSMANN_FIND_RANGE:
+                                    tappeihnachtsmann_find_points.remove(pt)
+                                    try: sock.sendall(struct.pack("!B", 77))
+                                    except: pass
+                                    break
+
+                        elif rk == "raphi":
+                            for pt in list(raphi_collect_points):
+                                if math.hypot(my_center[0] - pt.centerx, my_center[1] - pt.centery) < RAPHI_COLLECT_RANGE:
+                                    raphi_collect_points.remove(pt)
+                                    raphi_collected += 1
+                                    try: sock.sendall(struct.pack("!B", 20))
+                                    except: pass
+                                    break
+
+                        elif rk == "ramona" and not my_player.is_dead and (time.time() - ramona_last_forge) >= RAMONA_FORGE_COOLDOWN_CLIENT:
+                            target = find_nearest_player(my_center, other_players, RAMONA_FORGE_RANGE, dead_players)
+                            if target is not None:
+                                try: sock.sendall(struct.pack("!BB", 79, target))
+                                except: pass
+                                ramona_last_forge = time.time()
+
                     # NEU: Überarbeitetes Vent-System mit Leertaste (Abtauchen / Auftauchen)
                     if event.key == pygame.K_SPACE and not show_minimap and not my_player.is_dead:
                         if my_player.role == "Imposter":
@@ -945,7 +1970,9 @@ while running:
                                 except: pass
 
         # Abstimmen per Mausklick, während ein Meeting läuft (siehe draw_meeting())
-        if meeting_active and event.type == pygame.MOUSEBUTTONDOWN and event.button == 1 and not has_voted and not my_player.is_dead:
+        if (meeting_active and event.type == pygame.MOUSEBUTTONDOWN and event.button == 1
+                and not has_voted and not my_player.is_dead
+                and not role_info_click_consumed):
             boxes, skip_rect, chat_rect, chat_input_rect = get_meeting_layout()
             voted_target = None
             for p_id, rect in boxes:
@@ -964,29 +1991,41 @@ while running:
 
         task_manager.handle_event(event)
 
-    if state == "game" and task_manager.active_task is None and not show_minimap and game_started:
-        # NEU: Normale WASD Bewegung blockieren, falls man im Vent sitzt
-        if not my_player.is_venting and not meeting_active:
-            if my_player.move(pygame.key.get_pressed(), hitboxes):
+    moved_this_frame = False
+
+    if state == "game" and task_manager.active_task is None and not show_minimap and not show_role_info and game_started:
+        # NEU: Normale WASD Bewegung blockieren, falls man im Vent sitzt oder (Vladimir) noch
+        # als frisch getöteter Geist das Intro abwarten muss
+        if not my_player.is_venting and not meeting_active and not (ghost_intro_timer > 0 and my_player.is_dead):
+            moved_this_frame = my_player.move(pygame.key.get_pressed(), hitboxes)
+            if moved_this_frame:
                 try: sock.sendall(struct.pack('!Bii', 2, int(my_player.rect.x), int(my_player.rect.y)))
                 except: running = False
 
     elif state == "lobby" and not game_started and my_id is not None:
-        if my_player.move(pygame.key.get_pressed(), lobby_hitboxes):
+        moved_this_frame = my_player.move(pygame.key.get_pressed(), lobby_hitboxes)
+        if moved_this_frame:
             try: sock.sendall(struct.pack('!Bii', 2, int(my_player.rect.x), int(my_player.rect.y)))
             except: running = False
 
-    elif state in ["crew_win", "imposter_win"]:
+    elif state in ["crew_win", "imposter_win", "independent_win"]:
             if event.type == pygame.KEYDOWN and event.key == pygame.K_RETURN:
                 if my_id == host_id:
                     try: sock.sendall(struct.pack("!B", 23))
                     except: pass
+
+    # NEU: Laufanimation fortschreiben - eigener Spieler und alle anderen
+    if my_id is not None:
+        my_player.update_walk_anim(dt, moved_this_frame)
+    update_other_walk_anims(dt)
 
     # --- RENDERING ---
     if state == "menu":
         draw_menu()
     elif state == "lobby" and not game_started:
         draw_lobby()
+    elif state == "role_select":
+        draw_role_select()
     elif state == "game":
         camera_x = my_player.rect.x - (INTERNAL_SIZE // 2) + (PLAYER_SIZE // 2)
         camera_y = my_player.rect.y - (INTERNAL_SIZE // 2) + (PLAYER_SIZE // 2)
@@ -1000,17 +2039,29 @@ while running:
 
         my_center = my_player.rect.center
 
+        # NEU: Einsammelbare Rollen-Items mit eigener Textur. Die Listen sind nur bei der
+        # jeweiligen Rolle gefuellt, deshalb koennen alle drei bedenkenlos gezeichnet werden.
+        draw_world_items(internal_surface, raphi_collect_points, "pfandflasche", my_center, camera_x, camera_y)
+        draw_world_items(internal_surface, tappeihnachtsmann_find_points, "geschenk", my_center, camera_x, camera_y)
+        draw_world_items(internal_surface, yoshi_find_points, "standard", my_center, camera_x, camera_y)
+
         # Leichen rendern
-        for d_id, (dx, dy) in dead_bodies.items():
+        for d_id, (dx, dy, weapon_id) in dead_bodies.items():
             b_img = player_dead_images.get(d_id % len(player_dead_images))
             if not b_img: continue
-            
+
             body_center = (dx + (PLAYER_SIZE // 2), dy + (PLAYER_SIZE // 2))
             distance = math.hypot(my_center[0] - body_center[0], my_center[1] - body_center[1])
-            
+
             if distance <= VISION_RADIUS:
                 if has_line_of_sight(my_center, body_center, mapwalls):
                     internal_surface.blit(b_img, (dx - camera_x, dy - camera_y))
+                    # Martin: Schere steckt in der Leiche (eigene Textur, Assets/Items/schere.png)
+                    if weapon_id == 1:
+                        scissors_img = item_images.get("schere")
+                        if scissors_img:
+                            internal_surface.blit(scissors_img, (body_center[0] - camera_x - ITEM_SIZE // 2,
+                                                                 body_center[1] - camera_y - ITEM_SIZE // 2))
 
         # Andere Spieler zeichnen
         my_center = my_player.rect.center
@@ -1047,14 +2098,39 @@ while running:
                 if p_id in dead_players: img_copy.set_alpha(min(current_alpha, 128))
                 else: img_copy.set_alpha(current_alpha)
                     
-                internal_surface.blit(img_copy, (pos[0] - camera_x, pos[1] - camera_y))
+                internal_surface.blit(img_copy, (pos[0] - camera_x, pos[1] - camera_y + get_walk_offset(p_id)))
                 
                 e_name = player_names.get(p_id, f"Player {p_id}")
-                name_text = name_font.render(e_name, True, (255, 255, 255))
+                # NEU: Mit-Imposter werden fuer Imposter rot hervorgehoben
+                name_color = (255, 90, 90) if p_id in my_imposter_teammates else (255, 255, 255)
+                name_text = name_font.render(e_name, True, name_color)
                 name_text.set_alpha(current_alpha)
                 nx = (pos[0] - camera_x) + (PLAYER_SIZE // 2) - (name_text.get_width() // 2)
                 ny = (pos[1] - camera_y) - 16
                 internal_surface.blit(name_text, (nx, ny))
+
+        # NEU: Vogelscheicher-Attrappen zeichnen (sehen aus wie der jeweilige Spieler)
+        for pid, (ddx, ddy, _expire) in list(decoys.items()):
+            d_center = (ddx + PLAYER_SIZE // 2, ddy + PLAYER_SIZE // 2)
+            if math.hypot(my_center[0] - d_center[0], my_center[1] - d_center[1]) <= VISION_RADIUS:
+                d_img = player_images.get(pid % len(player_images))
+                if d_img:
+                    internal_surface.blit(d_img, (ddx - camera_x, ddy - camera_y))
+
+        # NEU: Eigene platzierte Noah-Fallen (nur für Noah selbst sichtbar, eigene Textur)
+        if my_player.role_key == "noah" and noah_traps:
+            trap_img = item_images.get("falle")
+            if trap_img:
+                for tx, ty in noah_traps:
+                    internal_surface.blit(trap_img, (tx - camera_x - ITEM_SIZE // 2,
+                                                     ty - camera_y - ITEM_SIZE // 2))
+
+        # NEU: Monikas gesetzte Flagge (nur für Monika selbst sichtbar, eigene Textur)
+        if monika_flag_pos is not None and my_player.role_key == "monika":
+            flag_img = item_images.get("flagge")
+            if flag_img:
+                internal_surface.blit(flag_img, (monika_flag_pos[0] - camera_x - ITEM_SIZE // 2,
+                                                 monika_flag_pos[1] - camera_y - ITEM_SIZE // 2))
 
         # Eigenen Spieler zeichnen
         my_player.draw(internal_surface, camera_x, camera_y)
@@ -1062,6 +2138,16 @@ while running:
         my_name_text = name_font.render(my_name, True, (255, 255, 255))
         if my_player.is_dead or my_player.is_venting: my_name_text.set_alpha(128)
         internal_surface.blit(my_name_text, ((my_player.rect.x - camera_x) + (PLAYER_SIZE // 2) - (my_name_text.get_width() // 2), (my_player.rect.y - camera_y) - 16))
+
+        # NEU: Evelyns geöffnete Fenster - betroffene Räume bekommen einen weißbläulichen Nebel
+        if time.time() < window_hazard_until:
+            view_rect = internal_surface.get_rect()
+            for zone in window_zones:
+                zr = zone.move(-camera_x, -camera_y)
+                if zr.colliderect(view_rect):
+                    haze = pygame.Surface((zr.width, zr.height), pygame.SRCALPHA)
+                    haze.fill(EVELYN_FOG_COLOR)
+                    internal_surface.blit(haze, (zr.x, zr.y))
 
         internal_surface.blit(fog_overlay, (0, 0))
 
@@ -1101,12 +2187,14 @@ while running:
         prog_txt = proximity_font.render(f"Gesamt-Fortschritt ({global_task_progress}/{global_task_max})", True, (255, 255, 255))
         screen.blit(prog_txt, (bar_x + bar_width//2 - prog_txt.get_width()//2, bar_y + 3))
 
-        status_str = f"Rolle: {my_player.role} {'(GEIST)' if my_player.is_dead else ('(VENT)' if my_player.is_venting else '')}"
+        status_str = f"Rolle: {my_player.role_display_name} {'(GEIST)' if my_player.is_dead else ('(VENT)' if my_player.is_venting else '')}"
         role_hud = small_font.render(status_str, True, (255, 100, 100) if (my_player.is_dead or my_player.is_venting) else (255, 255, 255))
         screen.blit(role_hud, (20, 20))
         screen.blit(info_text1, (20, 80))
         screen.blit(info_text2, (20, 110))
         screen.blit(info_text3, (20, 140))
+
+        draw_ability_hud()
 
         if intro_timer > 0:
             intro_timer -= 1
@@ -1114,12 +2202,48 @@ while running:
             overlay.set_alpha(180)
             overlay.fill((0, 0, 0))
             screen.blit(overlay, (0, 0))
-            
-            title_color = (255, 50, 50) if my_player.role == "Imposter" else (50, 200, 255)
-            role_text = menu_font.render(f"DU BIST: {my_player.role.upper()}", True, title_color)
-            desc_text = small_font.render(my_player.role_desc, True, (255, 255, 255))
+
+            title_color = (255, 50, 50) if my_player.role == "Imposter" else ((255, 210, 90) if my_player.role == "Independent" else (50, 200, 255))
+            role_text = menu_font.render(f"DU BIST: {my_player.role_display_name.upper()}", True, title_color)
+
+            img_y = HEIGHT // 2 - 60 - ROLE_REVEAL_SIZE - 20
+            if my_player.role_image:
+                screen.blit(my_player.role_image, (WIDTH // 2 - ROLE_REVEAL_SIZE // 2, img_y))
+
+            desc_text = wrap_text_render(my_player.role_desc, small_font, (255, 255, 255), WIDTH - 200)
             screen.blit(role_text, (WIDTH // 2 - role_text.get_width() // 2, HEIGHT // 2 - 60))
-            screen.blit(desc_text, (WIDTH // 2 - desc_text.get_width() // 2, HEIGHT // 2 + 10))
+
+            # NEU: kurz sagen, auf welcher Seite man steht
+            tl_text, tl_color = team_label()
+            team_surf = small_font.render(tl_text, True, tl_color)
+            screen.blit(team_surf, (WIDTH // 2 - team_surf.get_width() // 2, HEIGHT // 2 - 18))
+
+            desc_y = HEIGHT // 2 + 20
+            for line_surf in desc_text:
+                screen.blit(line_surf, (WIDTH // 2 - line_surf.get_width() // 2, desc_y))
+                desc_y += line_surf.get_height() + 4
+
+            # NEU: Imposter erfahren beim Rollen-Reveal, wer noch im Team ist
+            mates = imposter_teammate_names()
+            if mates:
+                mate_surf = small_font.render("Deine Mit-Imposter: " + ", ".join(mates), True, (255, 120, 120))
+                screen.blit(mate_surf, (WIDTH // 2 - mate_surf.get_width() // 2, desc_y + 10))
+                desc_y += mate_surf.get_height() + 14
+                kill_hint = chat_font.render("Ihr könnt euch gegenseitig nicht töten.", True, (220, 160, 160))
+                screen.blit(kill_hint, (WIDTH // 2 - kill_hint.get_width() // 2, desc_y))
+
+            hint_surf = chat_font.render("Taste R oder der Button am rechten Rand zeigt die Rolle jederzeit erneut.", True, (170, 175, 190))
+            screen.blit(hint_surf, (WIDTH // 2 - hint_surf.get_width() // 2, HEIGHT - 70))
+
+        if ghost_intro_timer > 0 and my_player.is_dead:
+            overlay = pygame.Surface((WIDTH, HEIGHT))
+            overlay.set_alpha(230)
+            overlay.fill((0, 0, 0))
+            screen.blit(overlay, (0, 0))
+            intro_txt = menu_font.render("Oshi no Ko Intro läuft...", True, (255, 255, 255))
+            screen.blit(intro_txt, (WIDTH // 2 - intro_txt.get_width() // 2, HEIGHT // 2 - 20))
+            sub_txt = small_font.render("(Vladimir ist im Spiel - Geister müssen kurz warten)", True, (180, 180, 180))
+            screen.blit(sub_txt, (WIDTH // 2 - sub_txt.get_width() // 2, HEIGHT // 2 + 30))
 
         if show_minimap and task_manager.active_task is None:
             mm_x, mm_y = (WIDTH - MINIMAP_WIDTH) // 2, (HEIGHT - MINIMAP_HEIGHT) // 2
@@ -1137,6 +2261,22 @@ while running:
                         pygame.draw.circle(screen, t_col, (t_x, t_y), 6)
                         pygame.draw.circle(screen, (0, 0, 0), (t_x, t_y), 6, 1)
 
+            # NEU: Einsammelbare Rollen-Items zusätzlich zu den Tasks in Blau einzeichnen
+            for item_spots in (raphi_collect_points, tappeihnachtsmann_find_points, yoshi_find_points):
+                for spot in item_spots:
+                    i_x = mm_x + int((spot.centerx / MAP_WIDTH_PX) * MINIMAP_WIDTH)
+                    i_y = mm_y + int((spot.centery / MAP_HEIGHT_PX) * MINIMAP_HEIGHT)
+                    pygame.draw.circle(screen, (60, 140, 255), (i_x, i_y), 6)
+                    pygame.draw.circle(screen, (0, 0, 0), (i_x, i_y), 6, 1)
+
+            # NEU: Noah sieht seine eigenen Fallen auf der Karte
+            if my_player.role_key == "noah":
+                for tx, ty in noah_traps:
+                    n_x = mm_x + int((tx / MAP_WIDTH_PX) * MINIMAP_WIDTH)
+                    n_y = mm_y + int((ty / MAP_HEIGHT_PX) * MINIMAP_HEIGHT)
+                    pygame.draw.circle(screen, (255, 80, 80), (n_x, n_y), 6)
+                    pygame.draw.circle(screen, (0, 0, 0), (n_x, n_y), 6, 1)
+
             player_mm_x = mm_x + int((my_player.rect.centerx / MAP_WIDTH_PX) * MINIMAP_WIDTH)
             player_mm_y = mm_y + int((my_player.rect.centery / MAP_HEIGHT_PX) * MINIMAP_HEIGHT)
             p_col = (150, 50, 50) if my_player.is_dead else (255, 30, 30)
@@ -1145,6 +2285,12 @@ while running:
 
         if meeting_active:
             draw_meeting()
+
+        # NEU: Button am Bildschirmrand + Rollen-Info-Panel (immer ganz oben zeichnen)
+        if task_manager.active_task is None:
+            draw_role_info_button()
+            if show_role_info:
+                draw_role_info_panel()
 
     elif state in ["crew_win", "imposter_win"]:
         screen.fill((20, 25, 30))
@@ -1162,6 +2308,21 @@ while running:
         imp_text = small_font.render(f"Imposter war(en): {', '.join(imp_names)}", True, (255, 50, 50))
         screen.blit(imp_text, (WIDTH // 2 - imp_text.get_width() // 2, HEIGHT // 2 + 20))
         
+        if my_id == host_id: back_txt = small_font.render("Drücke ENTER, um alle in die Lobby zurückzuholen", True, (255, 255, 255))
+        else: back_txt = small_font.render("Warte auf den Host für Lobby-Rückkehr...", True, (150, 150, 150))
+        screen.blit(back_txt, (WIDTH // 2 - back_txt.get_width() // 2, HEIGHT // 2 + 100))
+
+    elif state == "independent_win":
+        screen.fill((30, 24, 10))
+        win_title = menu_font.render("EIGENSTÄNDIG GEWINNT!", True, (255, 210, 90))
+        winner_name = player_names.get(independent_winner_id, "Unbekannt")
+        win_sub = small_font.render(f"{winner_name} hat das eigene Ziel erreicht.", True, (255, 255, 255))
+        # Eine eigenständige Rolle gewinnt allein - Besatzung UND Imposter verlieren zusammen
+        win_sub2 = small_font.render("Besatzung UND Imposter haben verloren.", True, (255, 120, 120))
+        screen.blit(win_title, (WIDTH // 2 - win_title.get_width() // 2, HEIGHT // 2 - 100))
+        screen.blit(win_sub, (WIDTH // 2 - win_sub.get_width() // 2, HEIGHT // 2 - 40))
+        screen.blit(win_sub2, (WIDTH // 2 - win_sub2.get_width() // 2, HEIGHT // 2))
+
         if my_id == host_id: back_txt = small_font.render("Drücke ENTER, um alle in die Lobby zurückzuholen", True, (255, 255, 255))
         else: back_txt = small_font.render("Warte auf den Host für Lobby-Rückkehr...", True, (150, 150, 150))
         screen.blit(back_txt, (WIDTH // 2 - back_txt.get_width() // 2, HEIGHT // 2 + 100))
