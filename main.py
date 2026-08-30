@@ -760,7 +760,7 @@ while running:
                         sys.exit()
 
                 if event.key == pygame.K_HASH:
-                    mapwalls.clear()
+                    mapwalls = []
 
                 if event.key == pygame.K_m and task_manager.active_task is None:
                     show_minimap = not show_minimap
