@@ -40,8 +40,8 @@ class MeetingSystem:
         self.is_active = False
         self.phase = "IDLE"  # "CHAT_ONLY", "VOTING", "ENDED"
         self.start_time = 0
-        self.chat_cooldown = 15  # 15 Sekunden nur Chat
-        self.voting_time = 30    # 30 Sekunden zum Abstimmen
+        self.chat_cooldown = 5  # 15 Sekunden nur Chat
+        self.voting_time = 10    # 30 Sekunden zum Abstimmen
         
         # =========================
         # DATEN
