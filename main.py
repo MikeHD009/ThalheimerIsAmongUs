@@ -34,7 +34,8 @@ KILL_RANGE_DEFAULT = 60
 KILL_COOLDOWN_DEFAULT = 20.0
 KILL_RANGE_MARTIN = 90
 KILL_COOLDOWN_MARTIN = 35.0
-MONIKA_RECALL_INTERVAL = 15.0   # laut Dokument: alle 15 Sekunden zurueck zur Flagge
+MONIKA_TELEPORT_COOLDOWN = 15.0  # Monika: erst danach ist die Reise zur Flagge wieder moeglich
+MONIKA_FLAG_COOLDOWN = 20.0      # Monika: erst danach kann die Flagge neu gesetzt werden
 STROBLPETER_MARK_DELAY = 10.0
 STROBLPETER_MARK_RANGE = 250
 EVELYN_COOLDOWN = 30.0
@@ -56,7 +57,16 @@ RAMONA_FORGE_RANGE = 80
 RAMONA_FORGE_COOLDOWN_CLIENT = 10.0
 RAMONA_WIN_STAND_TIME = 10.0
 DAVID_MARK_RANGE = 250
-VLADIMIR_INTRO_DURATION = 5.0
+VLADIMIR_INTRO_DURATION = 5.0        # Notfall-Wartezeit, falls das Video nicht abspielbar ist
+VLADIMIR_VIDEO_PATH = "Assets/OshiNoKoIntro.m4v"
+VLADIMIR_VIDEO_MAX_DURATION = 60.0   # Sicherheitsnetz, falls das Video nie ein EOF meldet
+LAURIN_SABOTAGE_RANGE = 60           # Reichweite, in der Laurin eine Aufgabe zurücksetzen kann
+MEETING_DISCUSSION_TIME = 45.0       # muss zu server.py passen
+MEETING_VOTE_TIME = 30.0             # muss zu server.py passen
+MEETING_PHASE_NONE = 0
+MEETING_PHASE_DISCUSSION = 1
+MEETING_PHASE_VOTE = 2
+MEETING_REASON_KALIYOGA = 2          # Kaliyoga ruft von ueberall aus
 RAMONA_MIN_PLAYERS_CLIENT = 4  # muss zu RAMONA_MIN_PLAYERS in server.py passen
 MAX_IMPOSTERS = 3
 
@@ -154,6 +164,95 @@ for _item_key, _item_file in ITEM_FILES.items():
         _fallback = pygame.Surface((ITEM_SIZE, ITEM_SIZE), pygame.SRCALPHA)
         pygame.draw.circle(_fallback, (80, 180, 255), (ITEM_SIZE // 2, ITEM_SIZE // 2), ITEM_SIZE // 2)
         item_images[_item_key] = _fallback
+
+# =========================
+# VIDEO-WIEDERGABE (Vladimirs Anime-Intro)
+# =========================
+try:
+    from ffpyplayer.player import MediaPlayer
+    VIDEO_SUPPORTED = True
+except Exception as _video_err:
+    MediaPlayer = None
+    VIDEO_SUPPORTED = False
+    print("VIDEO: ffpyplayer nicht verfuegbar -", _video_err)
+
+
+class VideoPlayer:
+    """Spielt ein Video samt Ton bildschirmfuellend ab (fuer Vladimirs Opfer).
+    Ist ffpyplayer nicht installiert oder die Datei nicht vorhanden, meldet sich der Player
+    sofort als 'fertig' und der Aufrufer zeigt stattdessen einen einfachen Warte-Bildschirm."""
+
+    def __init__(self, path):
+        self.player = None
+        self.surface = None
+        self.finished = False
+        self.started_at = time.time()
+        if not VIDEO_SUPPORTED or not os.path.exists(path):
+            if not os.path.exists(path):
+                print("VIDEO: Datei nicht gefunden:", path)
+            self.finished = True
+            return
+        try:
+            self.player = MediaPlayer(path)
+        except Exception as e:
+            print("VIDEO OPEN ERROR:", e)
+            self.finished = True
+
+    @property
+    def active(self):
+        return not self.finished
+
+    def update(self):
+        if self.player is None or self.finished:
+            return
+        # Sicherheitsnetz gegen ein Video, das nie ein EOF meldet
+        if time.time() - self.started_at > VLADIMIR_VIDEO_MAX_DURATION:
+            self.close()
+            return
+        try:
+            frame, val = self.player.get_frame()
+        except Exception as e:
+            print("VIDEO ERROR:", e)
+            self.close()
+            return
+        if val == "eof":
+            self.close()
+            return
+        if frame is None:
+            return
+        img, _pts = frame
+        try:
+            if img.get_pixel_format() != "rgb24":
+                from ffpyplayer.pic import SWScale
+                w0, h0 = img.get_size()
+                img = SWScale(w0, h0, img.get_pixel_format(), ofmt="rgb24").scale(img)
+            w, h = img.get_size()
+            self.surface = pygame.image.frombuffer(bytes(img.to_bytearray()[0]), (w, h), "RGB")
+        except Exception as e:
+            print("VIDEO FRAME ERROR:", e)
+            self.close()
+
+    def draw(self, target):
+        target.fill((0, 0, 0))
+        if self.surface is None:
+            return
+        tw, th = target.get_size()
+        sw, sh = self.surface.get_size()
+        scale = min(tw / sw, th / sh)
+        dw, dh = max(1, int(sw * scale)), max(1, int(sh * scale))
+        target.blit(pygame.transform.smoothscale(self.surface, (dw, dh)),
+                    ((tw - dw) // 2, (th - dh) // 2))
+
+    def close(self):
+        self.finished = True
+        self.surface = None
+        if self.player is not None:
+            try:
+                self.player.close_player()
+            except Exception:
+                pass
+            self.player = None
+
 
 # =========================
 # SPIELER KLASSE
@@ -479,8 +578,8 @@ show_role_info = False         # NEU: Rollen-Info-Panel (Button am Bildschirmran
 kill_cooldown_remaining = 0.0
 
 monika_flag_pos = None
-monika_flag_used = False
-monika_recall_timer = 0.0
+monika_flag_cooldown = 0.0      # bis die Flagge neu gesetzt werden darf
+monika_teleport_cooldown = 0.0  # bis die Reise zur Flagge wieder moeglich ist
 
 stroblpeter_marked_id = None
 stroblpeter_mark_timer = 0.0
@@ -488,7 +587,8 @@ stroblpeter_ready_to_strike = False
 
 evelyn_cooldown_remaining = 0.0
 window_hazard_until = 0.0      # von Server (Paket 61) - bis wann die Fenster-Gefahr aktiv ist
-window_zone_timer = 0.0        # wie lange man schon ununterbrochen in einer Gefahrenzone steht
+window_hazard_room = -1        # welcher Fensterraum gerade offen steht (-1 = keiner)
+window_zone_timer = 0.0        # wie lange man schon ununterbrochen in der Gefahrenzone steht
 
 laurin_uses_left = 0
 
@@ -524,6 +624,9 @@ ramona_stand_timer = 0.0
 
 vladimir_active = False
 ghost_intro_timer = 0.0
+ghost_video = None             # laufender VideoPlayer fuer Vladimirs Opfer
+task_reset_banner_timer = 0.0  # Hinweis, dass Laurin eine Aufgabe zurueckgesetzt hat
+task_reset_banner_name = ""
 
 def has_line_of_sight(p1, p2, hitboxes):
     min_x, max_x = min(p1[0], p2[0]), max(p1[0], p2[0])
@@ -551,10 +654,12 @@ def receive_data(sock):
     global enabled_roles, independent_winner_id, vladimir_active, ghost_intro_timer
     global my_imposter_teammates, show_role_info
     global kill_cooldown_remaining
-    global monika_flag_pos, monika_flag_used, monika_recall_timer
+    global monika_flag_pos, monika_flag_cooldown, monika_teleport_cooldown
     global stroblpeter_marked_id, stroblpeter_mark_timer, stroblpeter_ready_to_strike
-    global evelyn_cooldown_remaining, window_hazard_until, window_zone_timer
+    global evelyn_cooldown_remaining, window_hazard_until, window_hazard_room, window_zone_timer
     global laurin_uses_left, david_marked_id, noah_traps, noah_trap_cooldown
+    global meeting_phase, meeting_selected_target, meeting_result_id, meeting_result_timer
+    global ghost_video, task_reset_banner_timer, task_reset_banner_name
     global vogelscheicher_invisible_until, decoys
     global pleschbergsteiger_uses_left
     global yoshi_finds, yoshi_find_points, yoshi_reveals_left, yoshi_reveal_result, yoshi_reveal_timer
@@ -613,13 +718,14 @@ def receive_data(sock):
                 # bereits in Paket 5 gesetzt, das immer VOR Paket 3 eintrifft)
                 kill_cooldown_remaining = 0.0
                 monika_flag_pos = None
-                monika_flag_used = False
-                monika_recall_timer = 0.0
+                monika_flag_cooldown = 0.0
+                monika_teleport_cooldown = 0.0
                 stroblpeter_marked_id = None
                 stroblpeter_mark_timer = 0.0
                 stroblpeter_ready_to_strike = False
                 evelyn_cooldown_remaining = 0.0
                 window_hazard_until = 0.0
+                window_hazard_room = -1
                 window_zone_timer = 0.0
                 david_marked_id = None
                 noah_traps = []
@@ -635,6 +741,14 @@ def receive_data(sock):
                 ramona_others_rights = {pid: 3 for pid in player_names.keys() if pid != my_id} if role_key == "ramona" else {}
                 ramona_stand_timer = 0.0
                 ghost_intro_timer = 0.0
+                if ghost_video is not None:
+                    ghost_video.close()
+                ghost_video = None
+                task_reset_banner_timer = 0.0
+                meeting_phase = MEETING_PHASE_NONE
+                meeting_selected_target = None
+                meeting_result_id = None
+                meeting_result_timer = 0.0
                 independent_winner_id = None
                 show_role_info = False
                 player_walk_phase.clear()
@@ -758,12 +872,15 @@ def receive_data(sock):
                 except: pass
                 
             elif packet_type == 31:
-                dead_id, no_corpse, weapon_id = struct.unpack("!BBB", sock.recv(3))
+                dead_id, no_corpse, weapon_id, death_flags = struct.unpack("!BBBB", sock.recv(4))
                 dead_players.add(dead_id)
                 if dead_id == my_id:
                     my_player.is_dead = True
-                    if vladimir_active:
-                        ghost_intro_timer = VLADIMIR_INTRO_DURATION
+                    # NEU: Nur wer von Vladimir getoetet wurde, muss das Anime-Intro abwarten
+                    if death_flags & 1:
+                        ghost_video = VideoPlayer(VLADIMIR_VIDEO_PATH)
+                        # Ohne abspielbares Video bleibt es beim kurzen Warte-Bildschirm
+                        ghost_intro_timer = 0.0 if ghost_video.active else VLADIMIR_INTRO_DURATION
                 # Im Meeting rausgevotete Spieler hinterlassen keine Leiche (wie im Original-Spiel),
                 # genauso wie Steinermikes Opfer (no_corpse) oder Evelyns Fensterfalle -
                 # nur ein "echter" Mord außerhalb eines Meetings erzeugt eine meldbare Leiche.
@@ -783,7 +900,11 @@ def receive_data(sock):
             elif packet_type == 40:
                 caller_id, reason = struct.unpack("!BB", sock.recv(2))
                 meeting_active = True
-                meeting_timer = 30.0
+                # NEU: Erst wird nur diskutiert/gechattet, die Abstimmung kommt mit Paket 42
+                meeting_phase = MEETING_PHASE_DISCUSSION
+                meeting_timer = MEETING_DISCUSSION_TIME
+                meeting_selected_target = None
+                meeting_result_id = None
                 meeting_caller_id = caller_id
                 meeting_reason = reason
                 has_voted = False
@@ -795,6 +916,12 @@ def receive_data(sock):
                     task_manager.reset_active_task()
                     task_manager.active_task = None
                 show_minimap = False
+
+            # NEU: Die Abstimmungsphase beginnt
+            elif packet_type == 42:
+                meeting_phase = MEETING_PHASE_VOTE
+                meeting_timer = MEETING_VOTE_TIME
+                meeting_selected_target = None
 
             elif packet_type == 41:
                 voter_id, target_id = struct.unpack("!BB", sock.recv(2))
@@ -812,7 +939,13 @@ def receive_data(sock):
                 meeting_chat_log.append(f"{sender_name}: {message}")
 
             elif packet_type == 43:
+                # NEU: Der Server schickt mit, wer rausgeworfen wurde (255 = niemand)
+                evicted_id = struct.unpack("!B", sock.recv(1))[0]
+                meeting_result_id = evicted_id
+                meeting_result_timer = 6.0
                 meeting_active = False
+                meeting_phase = MEETING_PHASE_NONE
+                meeting_selected_target = None
                 meeting_cooldown = 30.0
                 # Alle Spieler auf fixe Spawnpoints zurücksetzen
                 if my_id is not None and my_id < len(spawnpoints):
@@ -825,8 +958,18 @@ def receive_data(sock):
 
             # Evelyn: Fenster-Sabotage ist jetzt aktiv
             elif packet_type == 61:
+                window_hazard_room = struct.unpack("!B", sock.recv(1))[0]
                 window_hazard_until = time.time() + EVELYN_HAZARD_DURATION
                 window_zone_timer = 0.0
+
+            # NEU: Laurin hat eine Aufgabe fuer alle wieder unerledigt gemacht
+            elif packet_type == 64:
+                reset_idx = struct.unpack("!B", sock.recv(1))[0]
+                if reset_idx in my_player.my_completed_tasks:
+                    my_player.my_completed_tasks.remove(reset_idx)
+                    reset_task_instance(reset_idx)
+                    task_reset_banner_timer = 5.0
+                    task_reset_banner_name = TASK_TEMPLATES[reset_idx]["name"] if reset_idx < len(TASK_TEMPLATES) else "?"
 
             # Vogelscheicher: Attrappen-Position eines anderen Spielers
             elif packet_type == 69:
@@ -936,6 +1079,43 @@ TASK_TEMPLATES = [
 ]
 task_buttons = []
 
+def get_minimap_origin():
+    """Linke obere Ecke der Minimap - wird zum Zeichnen UND fuer Klicks gebraucht."""
+    return (WIDTH - MINIMAP_WIDTH) // 2, (HEIGHT - MINIMAP_HEIGHT) // 2
+
+def get_window_room_minimap_rects():
+    """NEU: Anklickbare Rechtecke der Fensterraeume auf der Minimap (fuer Evelyn).
+    Rueckgabe: Liste von (raum_index, rect)."""
+    mm_x, mm_y = get_minimap_origin()
+    result = []
+    for idx, zone in enumerate(window_zones):
+        rx = mm_x + int((zone.x / MAP_WIDTH_PX) * MINIMAP_WIDTH)
+        ry = mm_y + int((zone.y / MAP_HEIGHT_PX) * MINIMAP_HEIGHT)
+        rw = max(10, int((zone.width / MAP_WIDTH_PX) * MINIMAP_WIDTH))
+        rh = max(10, int((zone.height / MAP_HEIGHT_PX) * MINIMAP_HEIGHT))
+        result.append((idx, pygame.Rect(rx, ry, rw, rh)))
+    return result
+
+def ghost_intro_blocking():
+    """NEU: True, solange ein von Vladimir getoeteter Spieler noch das Intro sehen muss."""
+    if not my_player.is_dead:
+        return False
+    if ghost_video is not None and ghost_video.active:
+        return True
+    return ghost_intro_timer > 0
+
+def reset_task_instance(idx):
+    """NEU: Ersetzt die Aufgaben-Instanz durch eine frische, damit eine von Laurin
+    zurueckgesetzte Aufgabe wirklich wieder von vorne gespielt werden kann (sonst gilt sie
+    intern weiter als abgeschlossen und wuerde sofort wieder zugehen)."""
+    try:
+        old_task = task_manager.tasks[idx]
+        if task_manager.active_task is old_task:
+            return  # laeuft gerade - nicht unter den Fuessen wegziehen
+        task_manager.tasks[idx] = type(old_task)(old_task.screen)
+    except Exception as e:
+        print("TASK RESET ERROR:", e)
+
 def get_meeting_layout():
     """Liefert Spieler-Boxen, Skip-Button und Chat-Bereiche für die Meeting-Ansicht.
     Wird sowohl von draw_meeting() (Zeichnen) als auch vom Event-Handler (Abstimmen/Chat)
@@ -958,7 +1138,23 @@ def get_meeting_layout():
     chat_rect = pygame.Rect(40, HEIGHT - 230, WIDTH - 80, 150)
     chat_input_rect = pygame.Rect(40, input_row_y, WIDTH - 80 - 210, 40)
     skip_rect = pygame.Rect(WIDTH - 40 - 200, input_row_y, 200, 40)
-    return boxes, skip_rect, chat_rect, chat_input_rect
+
+    # NEU: Bestaetigungsleiste ueber dem Chat. Sie erscheint erst, wenn man in der
+    # Abstimmungsphase jemanden angeklickt hat: Haken = Stimme abgeben, X = Auswahl loeschen.
+    bar_w, bar_h = 520, 52
+    bar_rect = pygame.Rect((WIDTH - bar_w) // 2, chat_rect.top - bar_h - 14, bar_w, bar_h)
+    confirm_rect = pygame.Rect(bar_rect.right - 110, bar_rect.y + 6, 46, bar_h - 12)
+    cancel_rect = pygame.Rect(bar_rect.right - 58, bar_rect.y + 6, 46, bar_h - 12)
+    return boxes, skip_rect, chat_rect, chat_input_rect, bar_rect, confirm_rect, cancel_rect
+
+def meeting_selection_label():
+    """Text der Bestaetigungsleiste fuer die aktuelle Auswahl."""
+    if meeting_selected_target is None:
+        return ""
+    if meeting_selected_target == 255:
+        return "Abstimmung überspringen?"
+    name = player_names.get(meeting_selected_target, f"Spieler {meeting_selected_target}")
+    return f"Für {name} stimmen?"
 
 def draw_meeting():
     # Dunkler Overlay-Hintergrund (wie die Map)
@@ -969,21 +1165,41 @@ def draw_meeting():
 
     caller_name = player_names.get(meeting_caller_id, f"Spieler {meeting_caller_id}")
     if meeting_reason == MEETING_REASON_BODY:
-        title_str = f"{caller_name} hat eine Leiche gemeldet! ({int(meeting_timer)}s)"
+        title_str = f"{caller_name} hat eine Leiche gemeldet!"
+    elif meeting_reason == MEETING_REASON_KALIYOGA:
+        title_str = f"{caller_name} hat ein Yoga-Meeting einberufen!"
     else:
-        title_str = f"{caller_name} hat ein Meeting einberufen! ({int(meeting_timer)}s)"
+        title_str = f"{caller_name} hat ein Meeting einberufen!"
     title_txt = menu_font.render(title_str, True, (255, 255, 255))
-    screen.blit(title_txt, (WIDTH // 2 - title_txt.get_width() // 2, 40))
+    screen.blit(title_txt, (WIDTH // 2 - title_txt.get_width() // 2, 30))
 
-    boxes, skip_rect, chat_rect, chat_input_rect = get_meeting_layout()
+    # NEU: Phasenanzeige - erst reine Diskussion, danach die Abstimmung
+    if meeting_phase == MEETING_PHASE_VOTE:
+        phase_str = f"ABSTIMMUNG - noch {int(meeting_timer)}s"
+        phase_color = (255, 210, 90)
+    else:
+        phase_str = f"DISKUSSION - Abstimmung startet in {int(meeting_timer)}s"
+        phase_color = (120, 200, 255)
+    phase_txt = small_font.render(phase_str, True, phase_color)
+    screen.blit(phase_txt, (WIDTH // 2 - phase_txt.get_width() // 2, 78))
+
+    boxes, skip_rect, chat_rect, chat_input_rect, bar_rect, confirm_rect, cancel_rect = get_meeting_layout()
+    voting_open = (meeting_phase == MEETING_PHASE_VOTE) and not has_voted and not my_player.is_dead
+
     for p_id, rect in boxes:
         is_p_dead = p_id in dead_players
-        bg_color = (25, 25, 30) if is_p_dead else (40, 45, 55)
-        
+        is_selected = (meeting_selected_target == p_id)
+        bg_color = (25, 25, 30) if is_p_dead else ((55, 70, 45) if is_selected else (40, 45, 55))
+
         pygame.draw.rect(screen, bg_color, rect, border_radius=8)
-        border_color = (0, 255, 255) if p_id == my_id else (100, 100, 110)
-        pygame.draw.rect(screen, border_color, rect, 2, border_radius=8)
-        
+        if is_selected:
+            border_color = (255, 210, 90)
+        elif p_id == my_id:
+            border_color = (0, 255, 255)
+        else:
+            border_color = (100, 100, 110)
+        pygame.draw.rect(screen, border_color, rect, 3 if is_selected else 2, border_radius=8)
+
         # Spielerbild links (tot = ausgegraut)
         p_img = player_images.get(p_id % len(player_images))
         if p_img:
@@ -991,28 +1207,64 @@ def draw_meeting():
             if is_p_dead:
                 img_copy.fill((80, 80, 80, 255), special_flags=pygame.BLEND_RGBA_MULT)
             screen.blit(img_copy, (rect.x + 10, rect.y + (rect.height - PLAYER_SIZE) // 2))
-            
+
         # Name rechts daneben
         name_color = (120, 120, 120) if is_p_dead else (255, 255, 255)
         p_name = player_names.get(p_id, f"Player {p_id}")
         name_txt = name_font.render(p_name, True, name_color)
         screen.blit(name_txt, (rect.x + 15 + PLAYER_SIZE, rect.y + (rect.height - name_txt.get_height()) // 2))
-        
-        # Häkchen, wenn der Spieler bereits gewählt hat
+
+        # Wie viele Stimmen hat dieser Spieler schon bekommen?
+        votes_for = sum(1 for v in player_votes.values() if v == p_id)
+        if votes_for > 0:
+            votes_txt = name_font.render("O " * votes_for, True, (255, 90, 90))
+            screen.blit(votes_txt, (rect.right - 12 - votes_txt.get_width(), rect.y + 6))
+
+        # Hat dieser Spieler bereits abgestimmt?
         if p_id in player_votes:
-            voted_marker = name_font.render("✔", True, (0, 255, 0))
-            screen.blit(voted_marker, (rect.x + rect.width - 25, rect.y + (rect.height - voted_marker.get_height()) // 2))
-            
+            voted_marker = proximity_font.render("hat gewählt", True, (0, 220, 120))
+            screen.blit(voted_marker, (rect.right - 12 - voted_marker.get_width(), rect.bottom - 20))
+
     # Skip-Button (rechts neben der Chat-Eingabe)
-    pygame.draw.rect(screen, (60, 65, 75), skip_rect, border_radius=8)
-    pygame.draw.rect(screen, (200, 200, 200), skip_rect, 2, border_radius=8)
+    skip_selected = (meeting_selected_target == 255)
+    pygame.draw.rect(screen, (75, 90, 60) if skip_selected else (60, 65, 75), skip_rect, border_radius=8)
+    pygame.draw.rect(screen, (255, 210, 90) if skip_selected else (200, 200, 200), skip_rect,
+                     3 if skip_selected else 2, border_radius=8)
     skip_txt = name_font.render("SKIP", True, (255, 255, 255))
     screen.blit(skip_txt, (skip_rect.centerx - skip_txt.get_width() // 2, skip_rect.centery - skip_txt.get_height() // 2))
-    
+
     skip_voters = sum(1 for v in player_votes.values() if v == 255)
     if skip_voters > 0:
         sv_txt = name_font.render(f"({skip_voters})", True, (0, 255, 0))
         screen.blit(sv_txt, (skip_rect.centerx - sv_txt.get_width() // 2, skip_rect.top - 22))
+
+    # NEU: Erst anklicken, dann bestätigen - Haken gibt die Stimme ab, X verwirft die Auswahl
+    if voting_open and meeting_selected_target is not None:
+        pygame.draw.rect(screen, (30, 34, 44), bar_rect, border_radius=10)
+        pygame.draw.rect(screen, (255, 210, 90), bar_rect, 2, border_radius=10)
+        label = name_font.render(meeting_selection_label(), True, (255, 255, 255))
+        screen.blit(label, (bar_rect.x + 16, bar_rect.centery - label.get_height() // 2))
+
+        pygame.draw.rect(screen, (0, 180, 90), confirm_rect, border_radius=8)
+        pygame.draw.rect(screen, (255, 255, 255), confirm_rect, 2, border_radius=8)
+        ok_txt = menu_font.render("v", True, (255, 255, 255))
+        screen.blit(ok_txt, (confirm_rect.centerx - ok_txt.get_width() // 2, confirm_rect.centery - ok_txt.get_height() // 2))
+
+        pygame.draw.rect(screen, (190, 60, 60), cancel_rect, border_radius=8)
+        pygame.draw.rect(screen, (255, 255, 255), cancel_rect, 2, border_radius=8)
+        x_txt = menu_font.render("x", True, (255, 255, 255))
+        screen.blit(x_txt, (cancel_rect.centerx - x_txt.get_width() // 2, cancel_rect.centery - x_txt.get_height() // 2))
+    else:
+        if meeting_phase == MEETING_PHASE_DISCUSSION:
+            hint_str, hint_col = "Jetzt wird nur diskutiert - abgestimmt wird gleich.", (170, 175, 190)
+        elif has_voted:
+            hint_str, hint_col = "Deine Stimme ist abgegeben.", (0, 220, 120)
+        elif my_player.is_dead:
+            hint_str, hint_col = "Als Geist darfst du nicht abstimmen.", (170, 175, 190)
+        else:
+            hint_str, hint_col = "Klicke einen Spieler oder SKIP an - danach mit dem Haken bestätigen.", (255, 210, 90)
+        hint = chat_font.render(hint_str, True, hint_col)
+        screen.blit(hint, (WIDTH // 2 - hint.get_width() // 2, bar_rect.centery - hint.get_height() // 2))
 
     # =========================
     # CHAT (unter der Abstimmung)
@@ -1354,7 +1606,13 @@ def draw_ability_hud():
         screen.blit(proximity_font.render("Mit-Imposter: " + ", ".join(mates), True, (255, 120, 120)), (20, y)); y += 20
 
     if rk == "monika":
-        txt = "F: Flagge platzieren" if not monika_flag_used else f"Rückruf in {max(0.0, monika_recall_timer):.1f}s"
+        # NEU: Flagge setzen (F) und selbst entscheiden, wann man hinreist (G)
+        if monika_flag_pos is None:
+            txt = "F: Flagge platzieren"
+        else:
+            flag_part = "F: Flagge neu setzen" if monika_flag_cooldown <= 0 else f"Flagge neu in {monika_flag_cooldown:.1f}s"
+            tp_part = "G: zur Flagge reisen!" if monika_teleport_cooldown <= 0 else f"Reise bereit in {monika_teleport_cooldown:.1f}s"
+            txt = flag_part + "   |   " + tp_part
         screen.blit(proximity_font.render(txt, True, (255, 220, 150)), (20, y)); y += 20
 
     elif rk == "stroblpeter":
@@ -1367,11 +1625,19 @@ def draw_ability_hud():
         screen.blit(proximity_font.render(txt, True, (255, 220, 150)), (20, y)); y += 20
 
     elif rk == "evelyn":
-        txt = "F: Fenster-Sabotage" if evelyn_cooldown_remaining <= 0 else f"Sabotage-Cooldown: {evelyn_cooldown_remaining:.1f}s"
+        # NEU: Der Raum wird auf der Karte ausgewaehlt (Evelyn hat ja keine Tasks dort)
+        if evelyn_cooldown_remaining > 0:
+            txt = f"Fenster-Cooldown: {evelyn_cooldown_remaining:.1f}s"
+        else:
+            txt = "Karte öffnen (M) und einen Fensterraum anklicken"
         screen.blit(proximity_font.render(txt, True, (255, 220, 150)), (20, y)); y += 20
 
     elif rk == "laurin":
-        screen.blit(proximity_font.render(f"F: Task sabotieren ({laurin_uses_left} übrig)", True, (255, 220, 150)), (20, y)); y += 20
+        screen.blit(proximity_font.render(f"F bei einer Aufgabe: für alle zurücksetzen ({laurin_uses_left} übrig)", True, (255, 220, 150)), (20, y)); y += 20
+
+    elif rk == "kaliyoga":
+        txt = "F: Yoga-Notfallmeeting von überall" if not kaliyoga_bonus_used else "Yoga-Meeting bereits verbraucht"
+        screen.blit(proximity_font.render(txt, True, (150, 220, 255)), (20, y)); y += 20
 
     elif rk == "david":
         marked_name = player_names.get(david_marked_id) if david_marked_id is not None else None
@@ -1589,6 +1855,10 @@ meeting_caller_id = None
 meeting_reason = MEETING_REASON_BUTTON
 meeting_chat_log = []
 meeting_chat_input = ""
+meeting_phase = MEETING_PHASE_NONE   # Diskussion -> Abstimmung, siehe Pakete 40/42/43
+meeting_selected_target = None       # angeklickter, noch NICHT bestaetigter Stimmzettel
+meeting_result_id = None             # wer beim letzten Meeting rausgeflogen ist (255 = niemand)
+meeting_result_timer = 0.0           # wie lange das Ergebnis noch eingeblendet wird
 running = True
 show_minimap = False  
 
@@ -1617,14 +1887,15 @@ while running:
         if ghost_intro_timer > 0:
             ghost_intro_timer = max(0.0, ghost_intro_timer - dt)
 
-        # Monika: Marker platziert -> alle paar Sekunden automatisch zurückteleportieren
-        if my_player.role_key == "monika" and monika_flag_pos is not None and not my_player.is_dead:
-            monika_recall_timer -= dt
-            if monika_recall_timer <= 0:
-                monika_recall_timer = MONIKA_RECALL_INTERVAL
-                my_player.rect.centerx, my_player.rect.centery = monika_flag_pos
-                try: sock.sendall(struct.pack('!Bii', 2, int(my_player.rect.x), int(my_player.rect.y)))
-                except: pass
+        # NEU: Monika entscheidet selbst, wann sie reist - hier laufen nur die Cooldowns
+        if monika_flag_cooldown > 0:
+            monika_flag_cooldown = max(0.0, monika_flag_cooldown - dt)
+        if monika_teleport_cooldown > 0:
+            monika_teleport_cooldown = max(0.0, monika_teleport_cooldown - dt)
+        if task_reset_banner_timer > 0:
+            task_reset_banner_timer = max(0.0, task_reset_banner_timer - dt)
+        if meeting_result_timer > 0:
+            meeting_result_timer = max(0.0, meeting_result_timer - dt)
 
         # Stroblpeter: nach Ablauf der Merk-Zeit bereit zum Zuschlagen
         if my_player.role_key == "stroblpeter" and stroblpeter_marked_id is not None and not stroblpeter_ready_to_strike:
@@ -1632,14 +1903,14 @@ while running:
             if stroblpeter_mark_timer <= 0:
                 stroblpeter_ready_to_strike = True
 
-        # Evelyn: Fensterfalle - Aufenthaltszeit in einer Gefahrenzone tracken
-        if time.time() < window_hazard_until and not my_player.is_dead:
-            in_zone = any(z.collidepoint(my_player.rect.center) for z in window_zones)
-            if in_zone:
+        # Evelyn: Fensterfalle - nur der EINE geoeffnete Raum ist gefaehrlich
+        if (time.time() < window_hazard_until and not my_player.is_dead
+                and 0 <= window_hazard_room < len(window_zones)):
+            if window_zones[window_hazard_room].collidepoint(my_player.rect.center):
                 window_zone_timer += dt
                 if window_zone_timer > EVELYN_LINGER_LIMIT:
                     window_zone_timer = -999.0  # schon gemeldet, nicht erneut senden
-                    try: sock.sendall(struct.pack("!B", 62))
+                    try: sock.sendall(struct.pack("!BB", 62, window_hazard_room))
                     except: pass
             else:
                 window_zone_timer = 0.0
@@ -1728,6 +1999,18 @@ while running:
                     show_role_info = False
                     role_info_click_consumed = True
 
+            # NEU: Evelyn waehlt ihren Fensterraum direkt auf der geoeffneten Karte aus
+            if (event.type == pygame.MOUSEBUTTONDOWN and event.button == 1
+                    and show_minimap and not role_info_click_consumed
+                    and my_player.role_key == "evelyn" and not my_player.is_dead
+                    and evelyn_cooldown_remaining <= 0 and not meeting_active):
+                for room_idx, room_rect in get_window_room_minimap_rects():
+                    if room_rect.collidepoint(event.pos):
+                        try: sock.sendall(struct.pack("!BB", 60, room_idx))
+                        except: pass
+                        evelyn_cooldown_remaining = EVELYN_COOLDOWN
+                        break
+
             if event.type == pygame.KEYDOWN:
                 if meeting_active:
                     # Während eines Meetings sind Tasten NUR für den Chat da - Q/M/E/Leertaste/
@@ -1762,6 +2045,17 @@ while running:
                     # NEU: Rollenbeschreibung jederzeit nachschlagen
                     if event.key == pygame.K_r and task_manager.active_task is None:
                         show_role_info = not show_role_info
+
+                    # NEU: Monika entscheidet selbst, wann sie zu ihrer Flagge reist.
+                    # (Q ist schon mit "Spiel beenden" belegt, deshalb G wie "Gehe zur Flagge".)
+                    if (event.key == pygame.K_g and my_player.role_key == "monika"
+                            and not my_player.is_dead and not my_player.is_venting
+                            and task_manager.active_task is None and not show_minimap):
+                        if monika_flag_pos is not None and monika_teleport_cooldown <= 0:
+                            my_player.rect.centerx, my_player.rect.centery = monika_flag_pos
+                            monika_teleport_cooldown = MONIKA_TELEPORT_COOLDOWN
+                            try: sock.sendall(struct.pack('!Bii', 2, int(my_player.rect.x), int(my_player.rect.y)))
+                            except: pass
 
                     # NEU: Pfeiltasten / AD Steuerung zum Durchwechseln, wenn man im Vent ist
                     if my_player.is_venting:
@@ -1800,9 +2094,7 @@ while running:
                             # Leiche melden -> Meeting starten (kein Cooldown, wie im echten Spiel)
                             try: sock.sendall(struct.pack("!BB", 40, MEETING_REASON_BODY))
                             except: pass
-                        elif at_meeting_box and not my_player.is_dead and (meeting_cooldown <= 0 or (my_player.role_key == "kaliyoga" and not kaliyoga_bonus_used)):
-                            if meeting_cooldown > 0:
-                                kaliyoga_bonus_used = True  # Kaliyoga: 1x Bonus-Meeting trotz eigenem Cooldown
+                        elif at_meeting_box and not my_player.is_dead and meeting_cooldown <= 0:
                             try: sock.sendall(struct.pack("!BB", 40, MEETING_REASON_BUTTON))
                             except: pass
                         elif my_player.role == "Imposter" and not my_player.is_dead and kill_cooldown_remaining <= 0:
@@ -1843,10 +2135,12 @@ while running:
                         rk = my_player.role_key
 
                         if rk == "monika" and not my_player.is_dead:
-                            if not monika_flag_used:
+                            # NEU: Flagge setzen. Sie bleibt liegen und kann nach dem Cooldown
+                            # an einer anderen Stelle neu gesetzt werden.
+                            if monika_flag_cooldown <= 0:
                                 monika_flag_pos = my_player.rect.center
-                                monika_flag_used = True
-                                monika_recall_timer = MONIKA_RECALL_INTERVAL
+                                monika_flag_cooldown = MONIKA_FLAG_COOLDOWN
+                                monika_teleport_cooldown = MONIKA_TELEPORT_COOLDOWN
 
                         elif rk == "stroblpeter" and not my_player.is_dead:
                             if stroblpeter_marked_id is None:
@@ -1866,15 +2160,23 @@ while running:
                                 stroblpeter_marked_id = None
                                 stroblpeter_ready_to_strike = False
 
-                        elif rk == "evelyn" and not my_player.is_dead and evelyn_cooldown_remaining <= 0:
-                            try: sock.sendall(struct.pack("!B", 60))
-                            except: pass
-                            evelyn_cooldown_remaining = EVELYN_COOLDOWN
+                        elif rk == "laurin" and laurin_uses_left > 0 and not my_player.is_dead:
+                            # NEU: Laurin geht zu einer Aufgabe und macht sie fuer alle wieder offen
+                            nearest_btn, nearest_dist = None, LAURIN_SABOTAGE_RANGE
+                            for btn in task_buttons:
+                                d = math.hypot(my_center[0] - btn["rect"].centerx, my_center[1] - btn["rect"].centery)
+                                if d < nearest_dist:
+                                    nearest_dist, nearest_btn = d, btn
+                            if nearest_btn is not None:
+                                try: sock.sendall(struct.pack("!BB", 63, nearest_btn["task_index"]))
+                                except: pass
+                                laurin_uses_left -= 1
 
-                        elif rk == "laurin" and laurin_uses_left > 0:
-                            try: sock.sendall(struct.pack("!B", 63))
+                        elif rk == "kaliyoga" and not my_player.is_dead and not kaliyoga_bonus_used:
+                            # NEU: einmal pro Spiel ein Notfallmeeting von ueberall aus
+                            kaliyoga_bonus_used = True
+                            try: sock.sendall(struct.pack("!BB", 40, MEETING_REASON_KALIYOGA))
                             except: pass
-                            laurin_uses_left -= 1
 
                         elif rk == "david" and not my_player.is_dead:
                             target = find_nearest_player(my_center, other_players, DAVID_MARK_RANGE, dead_players)
@@ -1936,7 +2238,8 @@ while running:
                                 if math.hypot(my_center[0] - pt.centerx, my_center[1] - pt.centery) < RAPHI_COLLECT_RANGE:
                                     raphi_collect_points.remove(pt)
                                     raphi_collected += 1
-                                    try: sock.sendall(struct.pack("!B", 20))
+                                    # 255 = keine Karten-Aufgabe (Pfandflasche), fuer Laurin nicht sabotierbar
+                                    try: sock.sendall(struct.pack("!BB", 20, 255))
                                     except: pass
                                     break
 
@@ -1969,25 +2272,31 @@ while running:
                                 try: sock.sendall(struct.pack('!Bii', 2, int(my_player.rect.x), int(my_player.rect.y)))
                                 except: pass
 
-        # Abstimmen per Mausklick, während ein Meeting läuft (siehe draw_meeting())
-        if (meeting_active and event.type == pygame.MOUSEBUTTONDOWN and event.button == 1
+        # NEU: Abstimmen in zwei Schritten - erst einen Spieler (oder SKIP) anklicken,
+        # dann in der Bestaetigungsleiste den Haken druecken. Das X verwirft die Auswahl.
+        if (meeting_active and meeting_phase == MEETING_PHASE_VOTE
+                and event.type == pygame.MOUSEBUTTONDOWN and event.button == 1
                 and not has_voted and not my_player.is_dead
                 and not role_info_click_consumed):
-            boxes, skip_rect, chat_rect, chat_input_rect = get_meeting_layout()
-            voted_target = None
-            for p_id, rect in boxes:
-                if p_id in dead_players:
-                    continue  # Tote können nicht gewählt werden
-                if rect.collidepoint(event.pos):
-                    voted_target = p_id
-                    break
-            if voted_target is None and skip_rect.collidepoint(event.pos):
-                voted_target = 255  # 255 = Skip, siehe Server-Protokoll
+            boxes, skip_rect, chat_rect, chat_input_rect, bar_rect, confirm_rect, cancel_rect = get_meeting_layout()
 
-            if voted_target is not None:
-                try: sock.sendall(struct.pack("!BB", 41, voted_target))
+            if meeting_selected_target is not None and confirm_rect.collidepoint(event.pos):
+                try: sock.sendall(struct.pack("!BB", 41, meeting_selected_target))
                 except: pass
                 has_voted = True
+                meeting_selected_target = None
+            elif meeting_selected_target is not None and cancel_rect.collidepoint(event.pos):
+                meeting_selected_target = None
+            else:
+                for p_id, rect in boxes:
+                    if p_id in dead_players:
+                        continue  # Tote können nicht gewählt werden
+                    if rect.collidepoint(event.pos):
+                        meeting_selected_target = p_id
+                        break
+                else:
+                    if skip_rect.collidepoint(event.pos):
+                        meeting_selected_target = 255  # 255 = Skip, siehe Server-Protokoll
 
         task_manager.handle_event(event)
 
@@ -1996,7 +2305,7 @@ while running:
     if state == "game" and task_manager.active_task is None and not show_minimap and not show_role_info and game_started:
         # NEU: Normale WASD Bewegung blockieren, falls man im Vent sitzt oder (Vladimir) noch
         # als frisch getöteter Geist das Intro abwarten muss
-        if not my_player.is_venting and not meeting_active and not (ghost_intro_timer > 0 and my_player.is_dead):
+        if not my_player.is_venting and not meeting_active and not ghost_intro_blocking():
             moved_this_frame = my_player.move(pygame.key.get_pressed(), hitboxes)
             if moved_this_frame:
                 try: sock.sendall(struct.pack('!Bii', 2, int(my_player.rect.x), int(my_player.rect.y)))
@@ -2139,15 +2448,13 @@ while running:
         if my_player.is_dead or my_player.is_venting: my_name_text.set_alpha(128)
         internal_surface.blit(my_name_text, ((my_player.rect.x - camera_x) + (PLAYER_SIZE // 2) - (my_name_text.get_width() // 2), (my_player.rect.y - camera_y) - 16))
 
-        # NEU: Evelyns geöffnete Fenster - betroffene Räume bekommen einen weißbläulichen Nebel
-        if time.time() < window_hazard_until:
-            view_rect = internal_surface.get_rect()
-            for zone in window_zones:
-                zr = zone.move(-camera_x, -camera_y)
-                if zr.colliderect(view_rect):
-                    haze = pygame.Surface((zr.width, zr.height), pygame.SRCALPHA)
-                    haze.fill(EVELYN_FOG_COLOR)
-                    internal_surface.blit(haze, (zr.x, zr.y))
+        # NEU: Evelyns geöffnetes Fenster - nur der ausgewählte Raum bekommt den Nebel
+        if time.time() < window_hazard_until and 0 <= window_hazard_room < len(window_zones):
+            zr = window_zones[window_hazard_room].move(-camera_x, -camera_y)
+            if zr.colliderect(internal_surface.get_rect()):
+                haze = pygame.Surface((zr.width, zr.height), pygame.SRCALPHA)
+                haze.fill(EVELYN_FOG_COLOR)
+                internal_surface.blit(haze, (zr.x, zr.y))
 
         internal_surface.blit(fog_overlay, (0, 0))
 
@@ -2172,7 +2479,8 @@ while running:
             if not task_aborted and active_task_idx != -1:
                 if active_task_idx not in my_player.my_completed_tasks:
                     my_player.my_completed_tasks.append(active_task_idx)
-                    try: sock.sendall(struct.pack("!B", 20)) 
+                    # Index mitschicken, damit Laurin gezielt genau diese Aufgabe zuruecksetzen kann
+                    try: sock.sendall(struct.pack("!BB", 20, active_task_idx))
                     except: pass
             active_task_idx = -1
             task_aborted = False
@@ -2235,18 +2543,32 @@ while running:
             hint_surf = chat_font.render("Taste R oder der Button am rechten Rand zeigt die Rolle jederzeit erneut.", True, (170, 175, 190))
             screen.blit(hint_surf, (WIDTH // 2 - hint_surf.get_width() // 2, HEIGHT - 70))
 
-        if ghost_intro_timer > 0 and my_player.is_dead:
-            overlay = pygame.Surface((WIDTH, HEIGHT))
-            overlay.set_alpha(230)
-            overlay.fill((0, 0, 0))
-            screen.blit(overlay, (0, 0))
-            intro_txt = menu_font.render("Oshi no Ko Intro läuft...", True, (255, 255, 255))
-            screen.blit(intro_txt, (WIDTH // 2 - intro_txt.get_width() // 2, HEIGHT // 2 - 20))
-            sub_txt = small_font.render("(Vladimir ist im Spiel - Geister müssen kurz warten)", True, (180, 180, 180))
-            screen.blit(sub_txt, (WIDTH // 2 - sub_txt.get_width() // 2, HEIGHT // 2 + 30))
+        # NEU: Ergebnis der letzten Abstimmung kurz einblenden
+        if meeting_result_timer > 0 and not meeting_active:
+            if meeting_result_id is None or meeting_result_id == 255:
+                res_str, res_col = "Niemand wurde rausgeworfen.", (200, 200, 210)
+            else:
+                res_name = player_names.get(meeting_result_id, f"Spieler {meeting_result_id}")
+                res_str, res_col = f"{res_name} wurde rausgeworfen!", (255, 120, 120)
+            res_txt = small_font.render(res_str, True, res_col)
+            res_bg = pygame.Rect(WIDTH // 2 - res_txt.get_width() // 2 - 16, 34,
+                                 res_txt.get_width() + 32, res_txt.get_height() + 12)
+            pygame.draw.rect(screen, (18, 20, 28), res_bg, border_radius=8)
+            pygame.draw.rect(screen, res_col, res_bg, 2, border_radius=8)
+            screen.blit(res_txt, (WIDTH // 2 - res_txt.get_width() // 2, res_bg.y + 6))
+
+        # NEU: Hinweis, dass Laurin eine Aufgabe fuer alle zurueckgesetzt hat
+        if task_reset_banner_timer > 0:
+            reset_txt = small_font.render(f"Aufgabe sabotiert: {task_reset_banner_name} muss neu erledigt werden!",
+                                          True, (255, 180, 90))
+            reset_bg = pygame.Rect(WIDTH // 2 - reset_txt.get_width() // 2 - 16, 84,
+                                   reset_txt.get_width() + 32, reset_txt.get_height() + 12)
+            pygame.draw.rect(screen, (25, 20, 15), reset_bg, border_radius=8)
+            pygame.draw.rect(screen, (255, 180, 90), reset_bg, 2, border_radius=8)
+            screen.blit(reset_txt, (WIDTH // 2 - reset_txt.get_width() // 2, reset_bg.y + 6))
 
         if show_minimap and task_manager.active_task is None:
-            mm_x, mm_y = (WIDTH - MINIMAP_WIDTH) // 2, (HEIGHT - MINIMAP_HEIGHT) // 2
+            mm_x, mm_y = get_minimap_origin()
             pygame.draw.rect(screen, (25, 25, 30), (mm_x - 12, mm_y - 12, MINIMAP_WIDTH + 24, MINIMAP_HEIGHT + 24), border_radius=12)
             screen.blit(minimap_bg, (mm_x, mm_y))
             pygame.draw.rect(screen, (240, 240, 240), (mm_x, mm_y, MINIMAP_WIDTH, MINIMAP_HEIGHT), 2, border_radius=4)
@@ -2277,6 +2599,35 @@ while running:
                     pygame.draw.circle(screen, (255, 80, 80), (n_x, n_y), 6)
                     pygame.draw.circle(screen, (0, 0, 0), (n_x, n_y), 6, 1)
 
+            # NEU: Evelyn hat keine Aufgaben auf der Karte - stattdessen kann sie hier direkt
+            # einen der Fensterräume anklicken, der dann 20s lang geöffnet wird.
+            if my_player.role_key == "evelyn":
+                ready = evelyn_cooldown_remaining <= 0 and not my_player.is_dead
+                for room_idx, room_rect in get_window_room_minimap_rects():
+                    is_open = (room_idx == window_hazard_room and time.time() < window_hazard_until)
+                    if is_open:
+                        fill_col, border_col = (120, 190, 255, 110), (150, 220, 255)
+                    elif ready:
+                        fill_col, border_col = (255, 210, 90, 70), (255, 210, 90)
+                    else:
+                        fill_col, border_col = (140, 140, 150, 50), (140, 140, 150)
+                    shade = pygame.Surface((room_rect.width, room_rect.height), pygame.SRCALPHA)
+                    shade.fill(fill_col)
+                    screen.blit(shade, room_rect.topleft)
+                    pygame.draw.rect(screen, border_col, room_rect, 2, border_radius=4)
+                    lbl = proximity_font.render(f"Fenster {room_idx + 1}", True, border_col)
+                    screen.blit(lbl, (room_rect.centerx - lbl.get_width() // 2,
+                                      room_rect.centery - lbl.get_height() // 2))
+
+                if ready:
+                    info = "Klicke einen Fensterraum an, um ihn 20s lang zu öffnen"
+                    info_col = (255, 210, 90)
+                else:
+                    info = f"Nächste Fenster-Sabotage in {evelyn_cooldown_remaining:.1f}s"
+                    info_col = (170, 175, 190)
+                info_txt = small_font.render(info, True, info_col)
+                screen.blit(info_txt, (WIDTH // 2 - info_txt.get_width() // 2, mm_y - 46))
+
             player_mm_x = mm_x + int((my_player.rect.centerx / MAP_WIDTH_PX) * MINIMAP_WIDTH)
             player_mm_y = mm_y + int((my_player.rect.centery / MAP_HEIGHT_PX) * MINIMAP_HEIGHT)
             p_col = (150, 50, 50) if my_player.is_dead else (255, 30, 30)
@@ -2291,6 +2642,28 @@ while running:
             draw_role_info_button()
             if show_role_info:
                 draw_role_info_panel()
+
+        # NEU: Wer von Vladimir getötet wurde, sieht zuerst das komplette Anime-Intro.
+        # Das Video liegt ganz oben und blockiert solange die Geister-Steuerung.
+        if my_player.is_dead and ghost_video is not None and ghost_video.active:
+            ghost_video.update()
+            ghost_video.draw(screen)
+            note = small_font.render("Vladimir hat dich getötet - warte, bis das Intro durch ist.",
+                                     True, (235, 235, 240))
+            note_bg = pygame.Rect(WIDTH // 2 - note.get_width() // 2 - 16, HEIGHT - 64,
+                                  note.get_width() + 32, note.get_height() + 12)
+            pygame.draw.rect(screen, (0, 0, 0), note_bg, border_radius=8)
+            screen.blit(note, (WIDTH // 2 - note.get_width() // 2, note_bg.y + 6))
+        elif ghost_intro_timer > 0 and my_player.is_dead:
+            # Fallback, falls das Video nicht abgespielt werden kann
+            overlay = pygame.Surface((WIDTH, HEIGHT))
+            overlay.set_alpha(230)
+            overlay.fill((0, 0, 0))
+            screen.blit(overlay, (0, 0))
+            intro_txt = menu_font.render("Oshi no Ko Intro läuft...", True, (255, 255, 255))
+            screen.blit(intro_txt, (WIDTH // 2 - intro_txt.get_width() // 2, HEIGHT // 2 - 20))
+            sub_txt = small_font.render("(Vladimir hat dich getötet - Geister müssen kurz warten)", True, (180, 180, 180))
+            screen.blit(sub_txt, (WIDTH // 2 - sub_txt.get_width() // 2, HEIGHT // 2 + 30))
 
     elif state in ["crew_win", "imposter_win"]:
         screen.fill((20, 25, 30))

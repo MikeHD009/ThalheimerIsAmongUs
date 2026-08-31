@@ -23,7 +23,7 @@ ROLES = {
     "monika": {
         "name": "Monika Hogrieder",
         "team": TEAM_IMPOSTOR,
-        "desc": "Platziere einmal pro Spiel eine Flagge bei dir. Danach wirst du alle paar Sekunden automatisch dorthin zurueckteleportiert.",
+        "desc": "F setzt eine Flagge bei dir ab. Ist der Reise-Cooldown abgelaufen, teleportierst du dich mit G selbst dorthin - die Flagge bleibt stehen und kann spaeter neu gesetzt werden.",
         "image": "Monika_Hogrieder.png",
     },
     "steinermike": {
@@ -47,13 +47,13 @@ ROLES = {
     "evelyn": {
         "name": "Evelyn",
         "team": TEAM_IMPOSTOR,
-        "desc": "Oeffne alle 30s fuer 20s die Fenster. Spieler die sich laenger als 5s in einem Fensterraum aufhalten, sterben.",
+        "desc": "Waehle auf der Karte (M) alle 30s einen Fensterraum aus. Er steht 20s offen - wer sich laenger als 5s darin aufhaelt, stirbt und hinterlaesst eine Leiche.",
         "image": "Evelyn.png",
     },
     "laurin": {
         "name": "Laurin",
         "team": TEAM_IMPOSTOR,
-        "desc": "Kann insgesamt 3 mal den Aufgaben-Fortschritt der Crew sabotieren.",
+        "desc": "Gehe zu einer Aufgabe und mache sie mit F fuer alle Spieler wieder unerledigt. Insgesamt 3 mal moeglich.",
         "image": "Laurin.png",
         "max_uses": 3,
     },
@@ -72,7 +72,7 @@ ROLES = {
     "vladimir": {
         "name": "Vladimir",
         "team": TEAM_IMPOSTOR,
-        "desc": "Passiv: Getoetete Spieler koennen nicht sofort als Geist umherspuken und muessen erst ein Intro abwarten.",
+        "desc": "Wen du toetest, muss erst ein komplettes Anime-Intro anschauen, bevor er als Geist weiterspielen darf.",
         "image": "Vladimir.png",
     },
     "poeschl_froeschl": {
@@ -105,8 +105,9 @@ ROLES = {
     "kaliyoga": {
         "name": "Kaliyoga",
         "team": TEAM_CREW,
-        "desc": "Kann einmal pro Spiel ein Bonus-Notfallmeeting herbeirufen, auch waehrend des eigenen Cooldowns.",
+        "desc": "Kann einmal pro Spiel mit F von ueberall auf der Map ein Notfall-Meeting herbeirufen.",
         "image": "Kaliyoga.png",
+        "max_uses": 1,
     },
     "tappeihnachtsmann": {
         "name": "Tappeihnachtsmann",

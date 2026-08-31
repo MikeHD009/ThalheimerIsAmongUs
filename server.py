@@ -39,6 +39,14 @@ INVISIBILITY_DURATION = 8.0   # Vogelscheicher
 RAMONA_FORGE_COOLDOWN = 10.0  # Ramona
 TRAP_HIT_RADIUS = 20          # Noah
 NOAH_TRAP_LIMIT = 3           # Noah: hoechstens 3 gleichzeitige Fallen, die aelteste wird ersetzt
+EVELYN_COOLDOWN = 30.0        # Evelyn: alle 30s ein Fensterraum sabotierbar
+MEETING_DISCUSSION_TIME = 45.0  # Reine Chat-Phase vor der Abstimmung
+MEETING_VOTE_TIME = 30.0        # Danach kann abgestimmt werden
+
+# Grund fuer ein Meeting (Paket 40)
+MEETING_REASON_BUTTON = 0
+MEETING_REASON_BODY = 1
+MEETING_REASON_KALIYOGA = 2   # Kaliyoga: einmal pro Spiel von ueberall aus
 
 enabled_roles = set()          # vom Host per Paket 13 gesetzte Rollen-Keys
 
@@ -55,6 +63,10 @@ invisible_until = {}           # pid -> Zeitstempel bis wann unsichtbar (Vogelsc
 chat_scramble_armed = set()    # pids deren naechste Chat-Nachricht verwuerfelt wird (David)
 global_immortal_until = 0.0    # Zeitstempel bis wann NIEMAND sterben kann (Tappeihnachtsmann)
 window_hazard_active_until = 0.0  # Zeitstempel bis wann Evelyns Fenster-Falle aktiv ist
+window_hazard_room = 255       # Index des aktuell geoeffneten Fensterraums (255 = keiner)
+evelyn_last_use = 0.0          # Zeitstempel der letzten Fenster-Sabotage
+player_completed_tasks = {}    # pid -> Set erledigter Task-Indizes (fuer Laurins Sabotage)
+meeting_phase = 0              # 0 = kein Meeting, 1 = Diskussion, 2 = Abstimmung
 
 
 def max_imposters_for(n_players):
@@ -93,6 +105,53 @@ def role_setup_status():
     if friendly_n > crew_slots:
         return False, f"Zu viele freundliche Rollen ({friendly_n}) fuer {crew_slots} Besatzungsplaetze"
     return True, "ok"
+
+def start_voting_phase():
+    """NEU: Nach der reinen Chat-/Diskussionszeit wird die Abstimmung freigeschaltet."""
+    global meeting_phase, meeting_timer_obj
+    if not in_meeting:
+        return
+    meeting_phase = 2
+    broadcast_to_all(struct.pack("!B", 42))
+    meeting_timer_obj = threading.Timer(MEETING_VOTE_TIME, end_meeting)
+    meeting_timer_obj.start()
+
+def end_meeting():
+    """Wertet die Stimmen aus, wirft ggf. einen Spieler raus und beendet das Meeting."""
+    global in_meeting, meeting_phase
+    if not in_meeting:
+        return
+
+    tally = {}
+    skip_count = 0
+    for v_id, t_id in list(meeting_votes.items()):
+        if v_id in clients and v_id not in dead_players:
+            weight = 3 if player_roles.get(v_id) == "orakel" else 1
+            if t_id == 255:
+                skip_count += weight
+            elif t_id in clients and t_id not in dead_players:
+                tally[t_id] = tally.get(t_id, 0) + weight
+
+    max_votes = skip_count
+    evicted_id = 255
+    tie = False
+    for t_id, count in tally.items():
+        if count > max_votes:
+            max_votes = count
+            evicted_id = t_id
+            tie = False
+        elif count == max_votes:
+            tie = True
+
+    if not tie and evicted_id != 255 and time.time() >= global_immortal_until:
+        dead_players.add(evicted_id)
+        broadcast_to_all(struct.pack("!BBBBB", 31, evicted_id, 0, 0, 0))
+        check_win_conditions()
+
+    in_meeting = False
+    meeting_phase = 0
+    # Ergebnis mitschicken: 255 = niemand rausgeworfen (Skip oder Gleichstand)
+    broadcast_to_all(struct.pack("!BB", 43, evicted_id if not tie else 255))
 
 def send_lobby_update():
     player_count = len(clients)
@@ -161,8 +220,9 @@ def handle_client(conn, player_id):
     global player_base_team, player_roles, ability_uses, player_rights
     global ramona_id, ramona_last_use, active_traps, next_trap_id
     global invisible_until, chat_scramble_armed, global_immortal_until, window_hazard_active_until
+    global window_hazard_room, evelyn_last_use, player_completed_tasks
     global active_imposters, imposter_count
-    global in_meeting, meeting_timer_obj
+    global in_meeting, meeting_timer_obj, meeting_phase
 
     print(f"[SERVER] Thread gestartet für Player {player_id}")
     conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -221,6 +281,9 @@ def handle_client(conn, player_id):
                 chat_scramble_armed = set()
                 global_immortal_until = 0.0
                 window_hazard_active_until = 0.0
+                window_hazard_room = 255
+                evelyn_last_use = 0.0
+                player_completed_tasks = {pid: set() for pid in clients}
                 ramona_last_use = 0.0
                 ramona_id = None
 
@@ -292,8 +355,14 @@ def handle_client(conn, player_id):
                         disconnect(pid)
 
             elif packet == 20:
+                # NEU: Der Client schickt jetzt mit, WELCHE Aufgabe erledigt wurde (255 = keine
+                # Karten-Aufgabe, z.B. Raphis Pfandflaschen). Nur so kann Laurin gezielt eine
+                # Aufgabe fuer alle wieder zuruecksetzen.
+                done_task_idx = struct.unpack("!B", conn.recv(1))[0]
                 if player_roles.get(player_id) != "felix":
                     completed_crew_tasks += 1
+                    if done_task_idx != 255:
+                        player_completed_tasks.setdefault(player_id, set()).add(done_task_idx)
                 broadcast_to_all(struct.pack("!BHH", 21, completed_crew_tasks, total_crew_tasks))
 
                 if completed_crew_tasks >= total_crew_tasks and game_active:
@@ -313,7 +382,9 @@ def handle_client(conn, player_id):
                         killer_role = player_roles.get(player_id)
                         no_corpse = 1 if killer_role == "steinermike" else 0
                         weapon_id = 1 if killer_role == "martin" else 0
-                        broadcast_to_all(struct.pack("!BBBB", 31, target_id, no_corpse, weapon_id))
+                        # NEU: Bit 0 = das Opfer wurde von Vladimir getoetet -> Anime-Intro abspielen
+                        death_flags = 1 if killer_role == "vladimir" else 0
+                        broadcast_to_all(struct.pack("!BBBBB", 31, target_id, no_corpse, weapon_id, death_flags))
                         check_win_conditions()
 
             elif packet == 23:
@@ -339,7 +410,7 @@ def handle_client(conn, player_id):
                         if owner_id != player_id and abs(x - tx) < TRAP_HIT_RADIUS and abs(y - ty) < TRAP_HIT_RADIUS:
                             del active_traps[trap_id]
                             dead_players.add(player_id)
-                            broadcast_to_all(struct.pack("!BBBB", 31, player_id, 0, 0))
+                            broadcast_to_all(struct.pack("!BBBBB", 31, player_id, 0, 0, 0))
                             check_win_conditions()
                             break
 
@@ -351,55 +422,35 @@ def handle_client(conn, player_id):
 
             elif packet == 40:
                 reason = struct.unpack("!B", conn.recv(1))[0]
-                if game_active and not in_meeting and player_id not in dead_players:
+                # NEU: Kaliyoga darf einmal pro Spiel von ueberall aus ein Meeting rufen -
+                # das wird hier autoritativ geprueft und verbraucht.
+                allowed = game_active and not in_meeting and player_id not in dead_players
+                if allowed and reason == MEETING_REASON_KALIYOGA:
+                    if player_roles.get(player_id) == "kaliyoga" and ability_uses.get(player_id, 0) > 0:
+                        ability_uses[player_id] -= 1
+                    else:
+                        allowed = False
+
+                if allowed:
                     in_meeting = True
+                    meeting_phase = 1          # 1 = Diskussion (nur Chat)
                     meeting_votes.clear()
                     broadcast_to_all(struct.pack("!BBB", 40, player_id, reason))
-
-                    def end_meeting():
-                        global in_meeting
-
-                        if not in_meeting: return
-
-                        tally = {}
-                        skip_count = 0
-
-                        for v_id, t_id in list(meeting_votes.items()):
-                            if v_id in clients and v_id not in dead_players:
-                                weight = 3 if player_roles.get(v_id) == "orakel" else 1
-                                if t_id == 255:
-                                    skip_count += weight
-                                elif t_id in clients and t_id not in dead_players:
-                                    tally[t_id] = tally.get(t_id, 0) + weight
-
-                        max_votes = skip_count
-                        evicted_id = 255
-                        tie = False
-
-                        for t_id, count in tally.items():
-                            if count > max_votes:
-                                max_votes = count
-                                evicted_id = t_id
-                                tie = False
-                            elif count == max_votes:
-                                tie = True
-
-                        if not tie and evicted_id != 255 and time.time() >= global_immortal_until:
-                            dead_players.add(evicted_id)
-                            broadcast_to_all(struct.pack("!BBBB", 31, evicted_id, 0, 0))
-                            check_win_conditions()
-
-                        in_meeting = False
-                        broadcast_to_all(struct.pack("!B", 43))
-
-                    meeting_timer_obj = threading.Timer(30.0, end_meeting)
+                    meeting_timer_obj = threading.Timer(MEETING_DISCUSSION_TIME, start_voting_phase)
                     meeting_timer_obj.start()
 
             elif packet == 41:
                 target_id = struct.unpack("!B", conn.recv(1))[0]
-                if in_meeting and player_id not in dead_players:
+                # Stimmen zaehlen nur in der Abstimmungsphase und nur einmal pro Spieler
+                if in_meeting and meeting_phase == 2 and player_id not in dead_players and player_id not in meeting_votes:
                     meeting_votes[player_id] = target_id
                     broadcast_to_all(struct.pack("!BBB", 41, player_id, target_id))
+                    # Haben alle Lebenden abgestimmt, sofort auswerten (kein Warten auf den Timer)
+                    alive = [pid for pid in clients if pid not in dead_players]
+                    if alive and all(pid in meeting_votes for pid in alive):
+                        if meeting_timer_obj:
+                            meeting_timer_obj.cancel()
+                        threading.Thread(target=end_meeting, daemon=True).start()
 
             elif packet == 50:
                 msg_len = struct.unpack("!B", conn.recv(1))[0]
@@ -428,30 +479,51 @@ def handle_client(conn, player_id):
                             msg_len = len(msg_bytes)
                         except Exception:
                             pass
-                    broadcast_to_all(struct.pack("!BB", 50, player_id, msg_len) + msg_bytes)
+                    broadcast_to_all(struct.pack("!BBB", 50, player_id, msg_len) + msg_bytes)
 
             # ===== ROLLEN-FÄHIGKEITEN =====
 
             # Evelyn: Fenster-Sabotage aktivieren
             elif packet == 60:
-                if game_active and player_roles.get(player_id) == "evelyn":
-                    window_hazard_active_until = time.time() + WINDOW_HAZARD_DURATION
-                    broadcast_to_all(struct.pack("!B", 61))
+                # NEU: Evelyn waehlt gezielt EINEN Fensterraum aus (Index aus der Karte).
+                # Der Raum bleibt WINDOW_HAZARD_DURATION offen und ist danach erst nach
+                # EVELYN_COOLDOWN wieder ausloesbar.
+                room_idx = struct.unpack("!B", conn.recv(1))[0]
+                now = time.time()
+                if (game_active and player_roles.get(player_id) == "evelyn"
+                        and player_id not in dead_players
+                        and now - evelyn_last_use >= EVELYN_COOLDOWN):
+                    evelyn_last_use = now
+                    window_hazard_room = room_idx
+                    window_hazard_active_until = now + WINDOW_HAZARD_DURATION
+                    broadcast_to_all(struct.pack("!BB", 61, room_idx))
 
             # Selbstmeldung: an Evelyns Fensterfalle gestorben
             elif packet == 62:
+                reported_room = struct.unpack("!B", conn.recv(1))[0]
                 if (game_active and time.time() < window_hazard_active_until
+                        and reported_room == window_hazard_room
                         and player_id not in dead_players and time.time() >= global_immortal_until):
                     dead_players.add(player_id)
-                    broadcast_to_all(struct.pack("!BBBB", 31, player_id, 1, 0))
+                    # NEU: Evelyns Fensterfalle hinterlaesst jetzt eine ganz normale Leiche
+                    broadcast_to_all(struct.pack("!BBBBB", 31, player_id, 0, 0, 0))
                     check_win_conditions()
 
             # Laurin: Aufgaben-Fortschritt sabotieren
             elif packet == 63:
+                # NEU: Laurin geht zu einer konkreten Aufgabe und macht sie fuer ALLE Spieler
+                # wieder unerledigt. Betroffen sind nur Spieler, die sie wirklich schon hatten.
+                sabotage_task_idx = struct.unpack("!B", conn.recv(1))[0]
                 if (game_active and player_roles.get(player_id) == "laurin"
+                        and player_id not in dead_players
                         and ability_uses.get(player_id, 0) > 0):
+                    affected = [pid for pid, done in player_completed_tasks.items()
+                                if sabotage_task_idx in done]
                     ability_uses[player_id] -= 1
-                    completed_crew_tasks = max(0, completed_crew_tasks - 3)
+                    for pid in affected:
+                        player_completed_tasks[pid].discard(sabotage_task_idx)
+                    completed_crew_tasks = max(0, completed_crew_tasks - len(affected))
+                    broadcast_to_all(struct.pack("!BB", 64, sabotage_task_idx))
                     broadcast_to_all(struct.pack("!BHH", 21, completed_crew_tasks, total_crew_tasks))
 
             # David: Ziel fuer Chat-Verwuerfelung markieren
@@ -534,6 +606,7 @@ def handle_client(conn, player_id):
                 if meeting_timer_obj:
                     meeting_timer_obj.cancel()
                 in_meeting = False
+                meeting_phase = 0
 
     except Exception as e:
         print(f"[SERVER ERROR] Player {player_id}: {e}")
