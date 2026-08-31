@@ -461,7 +461,6 @@ def handle_client(conn, player_id):
                     msg_bytes += chunk
                 if in_meeting and len(msg_bytes) == msg_len and msg_len > 0:
                     if player_id in chat_scramble_armed:
-                        chat_scramble_armed.discard(player_id)
                         try:
                             text = msg_bytes.decode("utf-8")
                             words = text.split(" ")

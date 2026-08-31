@@ -2418,14 +2418,6 @@ while running:
                 ny = (pos[1] - camera_y) - 16
                 internal_surface.blit(name_text, (nx, ny))
 
-        # NEU: Vogelscheicher-Attrappen zeichnen (sehen aus wie der jeweilige Spieler)
-        for pid, (ddx, ddy, _expire) in list(decoys.items()):
-            d_center = (ddx + PLAYER_SIZE // 2, ddy + PLAYER_SIZE // 2)
-            if math.hypot(my_center[0] - d_center[0], my_center[1] - d_center[1]) <= VISION_RADIUS:
-                d_img = player_images.get(pid % len(player_images))
-                if d_img:
-                    internal_surface.blit(d_img, (ddx - camera_x, ddy - camera_y))
-
         # NEU: Eigene platzierte Noah-Fallen (nur für Noah selbst sichtbar, eigene Textur)
         if my_player.role_key == "noah" and noah_traps:
             trap_img = item_images.get("falle")
