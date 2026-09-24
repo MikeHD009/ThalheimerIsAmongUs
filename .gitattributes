@@ -1,0 +1,6 @@
+# Shell-Skripte und Dockerfile muessen auf dem Linux-Server LF-Zeilenenden haben,
+# sonst bricht bash mit "bad interpreter" ab.
+*.sh        text eol=lf
+Dockerfile  text eol=lf
+.dockerignore text eol=lf
+*.bat       text eol=crlf

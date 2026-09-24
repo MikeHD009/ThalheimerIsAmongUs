@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Thalheimer is Among Us</title>
+  <meta name="description" content="Thalheimer is Among Us im WLAN - direkt im Browser spielen, ohne Installation.">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <!-- ===================== STARTSEITE (Raumliste) ===================== -->
+  <main id="home" class="home">
+    <div class="stars" aria-hidden="true"></div>
+    <header class="hero">
+      <div class="crewmate" aria-hidden="true"><span class="visor"></span></div>
+      <div>
+        <h1>THALHEIMER <span>IS AMONG US</span></h1>
+        <p class="tagline">Im WLAN spielen – direkt im Browser, nichts installieren.</p>
+      </div>
+    </header>
+
+    <section class="grid">
+      <div class="card">
+        <h2>1 · Dein Name</h2>
+        <input id="playerName" maxlength="16" placeholder="z.B. Leander" autocomplete="nickname">
+        <p class="hint">Wird allen im Raum angezeigt (max. 16 Zeichen).</p>
+        <label class="check"><input type="checkbox" id="serverMode"> Server berechnet das Spiel
+          <small>(nur für sehr schwache Geräte – normalerweise aus lassen)</small></label>
+      </div>
+
+      <div class="card">
+        <h2>2 · Mit Code beitreten</h2>
+        <div class="row">
+          <input id="joinCode" class="code-input" maxlength="5" placeholder="ABCDE" autocomplete="off" spellcheck="false">
+          <button id="joinBtn" class="btn primary">Beitreten</button>
+        </div>
+        <p class="hint">Den 5-stelligen Raum-Code sagt dir der Host (steht auch in seiner Lobby).</p>
+      </div>
+
+      <div class="card">
+        <h2>… oder neuen Raum erstellen</h2>
+        <div class="row">
+          <input id="roomName" maxlength="24" placeholder="Raumname (optional)">
+          <button id="createBtn" class="btn accent">Erstellen</button>
+        </div>
+        <p class="hint" id="emptyHint">Leere Räume werden nach 10 Sekunden automatisch gelöscht.</p>
+      </div>
+    </section>
+
+    <section class="card rooms-card">
+      <div class="rooms-head">
+        <h2>Aktive Räume im WLAN</h2>
+        <span class="live" id="liveDot">aktualisiert laufend</span>
+      </div>
+      <div id="roomList" class="room-list" aria-live="polite"></div>
+    </section>
+
+    <section class="card help">
+      <h2>Steuerung</h2>
+      <div class="keys">
+        <span><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> laufen</span>
+        <span><kbd>E</kbd> benutzen / melden / töten</span>
+        <span><kbd>F</kbd> Rollen-Fähigkeit</span>
+        <span><kbd>Leertaste</kbd> Vent</span>
+        <span><kbd>M</kbd> Karte</span>
+        <span><kbd>R</kbd> Rolle</span>
+        <span><kbd>Q</kbd> Aufgabe schließen</span>
+        <span><kbd>Enter</kbd> Chat senden</span>
+      </div>
+      <p class="hint">Alle Aktions-Buttons unten rechts im Spiel sind auch mit der Maus klickbar. Das Spiel läuft direkt in deinem Browser (nichts installieren) und ist dadurch flüssig; der Server kümmert sich nur um die Spiellogik.</p>
+    </section>
+
+    <div id="toast" class="toast" role="status"></div>
+  </main>
+
+  <!-- ===================== SPIELANSICHT ===================== -->
+  <div id="game" class="game hidden">
+    <canvas id="screen" width="1440" height="810" tabindex="0" aria-label="Spielbildschirm"></canvas>
+
+    <div id="toolbar" class="toolbar">
+      <span class="tb-code" title="Raum-Code">Raum <b id="tbCode">-----</b></span>
+      <button id="tbCopy" class="tb-btn" title="Beitrittslink kopieren">Link kopieren</button>
+      <button id="tbSound" class="tb-btn" title="Ton an/aus">Ton: an</button>
+      <button id="tbFull" class="tb-btn" title="Vollbild an/aus">Vollbild</button>
+      <button id="tbLeave" class="tb-btn danger" title="Raum verlassen">Verlassen</button>
+      <span id="tbPing" class="tb-ping"></span>
+    </div>
+
+    <div id="loading" class="overlay">
+      <div class="spinner"></div>
+      <p id="loadingText">Verbinde mit Raum …</p>
+    </div>
+
+    <div id="ended" class="overlay hidden">
+      <div class="end-box">
+        <h2 id="endTitle">Verbindung beendet</h2>
+        <p id="endText"></p>
+        <button id="endBack" class="btn primary">Zurück zur Raumliste</button>
+      </div>
+    </div>
+
+    <div id="focusHint" class="focus-hint hidden">Klicke ins Bild, um weiterzuspielen</div>
+
+    <video id="introVideo" class="intro-video hidden" playsinline preload="none"></video>
+  </div>
+
+  <script src="/static/audio.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

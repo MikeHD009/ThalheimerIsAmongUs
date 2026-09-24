@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+# erzeugt von tools/build_web_client.py
+build/
+web/cdn/
+web/client/

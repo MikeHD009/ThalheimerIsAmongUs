@@ -1,0 +1,6 @@
+# Python-Pakete fuer den Server-Betrieb (im Container automatisch installiert).
+# Genau diese Versionen wurden getestet.
+pygame==2.6.1
+pillow==12.0.0
+numpy==2.2.6
+aiohttp==3.13.5

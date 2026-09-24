@@ -1,0 +1,191 @@
+<html lang="de"><script src="{{cookiecutter.cdn}}pythons.js" type=module id="site" data-python="python{{cookiecutter.PYBUILD}}" data-LINES=42 data-COLUMNS=132 data-os="snd,gui" async defer>#<!--
+
+# Thalheimer is Among Us - Spielseite (von tools/build_web_client.py mit pygbag erzeugt).
+# Dieser Python-Teil laeuft im Browser: er entpackt das Spiel und startet main.py.
+
+import sys
+import os
+import asyncio
+import platform
+from pathlib import Path
+
+# Python-Pakete (pygame) kommen vom eigenen Spielserver statt aus dem Internet -> klappt auch offline
+# im WLAN. Das steuert "PYGPI=/cdn/" am Anfang der Seitenadresse (/play/?PYGPI=/cdn/&room=...),
+# pygbag liest die Adress-Parameter beim Start als Umgebungsvariablen ein.
+
+
+async def custom_site():
+    import embed
+
+    platform.window.tiauGame.loading("Spiel wird entpackt ...")
+    platform.window.transfer.hidden = true
+    platform.window.canvas.style.visibility = "visible"
+
+    bundle = "{{cookiecutter.archive}}"
+    appdir = Path(f"/data/data/{bundle}")
+    appdir.mkdir()
+
+    import tarfile
+    async with platform.fopen("{{cookiecutter.archive}}.tar.gz", "rb") as archive:
+        tar = tarfile.open(fileobj=archive, mode="r:gz")
+        tar.extractall(path=appdir.as_posix(), filter='tar')
+        tar.close()
+
+    platform.run_main(PyConfig, loaderhome=appdir / "assets", loadermain=None)
+
+    while embed.counter() < 0:
+        await asyncio.sleep(.1)
+
+    main = appdir / "assets" / "main.py"
+    platform.window.tiauGame.loading("Spiel startet ...")
+
+    await TopLevel_async_handler.start_toplevel(platform.shell, console=window.python.config.debug)
+    __import__(__name__).__file__ = main
+
+    def ui_callback(pkg):
+        platform.window.tiauGame.loading(f"Lade {pkg} ...")
+
+    await shell.source(main, callback=ui_callback)
+
+    platform.window.infobox.style.display = "none"
+    platform.window.config.gui_divider = 1
+    platform.window.window_resize()
+
+asyncio.run(custom_site())
+
+# --></script><head><!--
+//=============================================================================
+// Ab hier HTML/JS der Spielseite
+//=============================================================================
+--><script type="application/javascript">
+
+config = {
+    xtermjs : "0",
+    _sdl2 : "canvas",
+    user_canvas : 0,
+    user_canvas_managed : 0,
+    gui_divider : 1,
+    ume_block : 0,
+    can_close : 0,
+    archive : "{{cookiecutter.archive}}",
+    gui_debug : 0,
+    cdn : "{{cookiecutter.cdn}}",
+    autorun : 0,
+    PYBUILD : "{{cookiecutter.PYBUILD}}",
+    fb_ar : 1.7778,
+    fb_width : "1440",
+    fb_height : "810"
+}
+
+function show_infobox() {}
+
+</script>
+
+    <title>Thalheimer is Among Us</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" type="image/png" href="favicon.png" sizes="16x16">
+    <script src="/static/audio.js"></script>
+    <script src="/static/game_glue.js"></script>
+
+    <style>
+        html, body { margin: 0; padding: 0; background: #000; overflow: hidden; height: 100%;
+                     font-family: "Segoe UI", system-ui, "Liberation Sans", Arial, sans-serif; color: #eef0fa; }
+        .hidden { display: none !important; }
+        /* die Canvas darf keinen Rand/Abstand haben, sonst stimmen die Mauskoordinaten nicht */
+        canvas.emscripten { border: 0 none; background-color: #000; width: 100%; height: 100%; z-index: 5;
+                            padding: 0; margin: 0 auto; position: absolute; top: 0; bottom: 0; left: 0; right: 0; outline: none; }
+        #transfer, #infobox, #pyconsole, #system, #box, #dlg, #html { display: none; }
+
+        .tiau-overlay { position: fixed; inset: 0; z-index: 50; display: flex; flex-direction: column; align-items: center;
+                        justify-content: center; text-align: center; background: radial-gradient(ellipse at top, #1b2150 0%, #070913 65%); padding: 16px; }
+        .tiau-title { font-size: clamp(26px, 5vw, 46px); font-weight: 900; letter-spacing: 1px; margin: 0 0 6px; }
+        .tiau-title span { color: #eb3b47; }
+        .tiau-sub { color: #9aa1bd; margin: 0 0 26px; }
+        .tiau-spinner { width: 54px; height: 54px; border-radius: 50%; border: 6px solid #28305e; border-top-color: #38d6ff;
+                        animation: tiauspin .9s linear infinite; margin-bottom: 18px; }
+        @keyframes tiauspin { to { transform: rotate(360deg); } }
+        .tiau-hint { color: #9aa1bd; font-size: 13px; margin-top: 18px; max-width: 520px; line-height: 1.5; }
+        .tiau-box { background: rgba(22,26,46,.92); border: 1px solid rgba(120,140,220,.25); border-radius: 16px; padding: 26px; max-width: 460px; }
+        .tiau-btn { border: 0; border-radius: 12px; padding: 12px 18px; font-size: 16px; font-weight: 800; cursor: pointer; color: #fff;
+                    background: linear-gradient(180deg, #3aa0ff, #1f6fd6); }
+
+        #tiauBar { position: fixed; top: 8px; right: 8px; z-index: 40; display: flex; gap: 6px; align-items: center; padding: 6px;
+                   border-radius: 12px; background: rgba(10,12,24,.8); border: 1px solid #2c3463; opacity: .2; transition: opacity .2s; font-size: 13px; }
+        #tiauBar:hover, #tiauBar.show { opacity: 1; }
+        #tiauBar b { color: #ffd046; letter-spacing: 2px; font-family: Consolas, "DejaVu Sans Mono", monospace; font-size: 15px; }
+        #tiauBar span { color: #9aa1bd; padding: 0 6px; }
+        .tb { border: 0; border-radius: 8px; padding: 7px 10px; background: #2a3160; color: #fff; font-weight: 700; cursor: pointer; font-size: 13px; }
+        .tb:hover { filter: brightness(1.2); }
+        .tb.danger { background: #8e2330; }
+        #tiauToast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 60; background: #1a1f3d;
+                     border: 1px solid #3b4585; padding: 10px 16px; border-radius: 10px; opacity: 0; transition: opacity .2s; pointer-events: none; }
+        #tiauToast.show { opacity: 1; }
+        #tiauBar .tb, #tiauBar span { white-space: nowrap; }
+        @media (max-width: 760px) {
+            #tiauBar { gap: 3px; padding: 4px; font-size: 11px; }
+            .tb { padding: 5px 7px; font-size: 11px; }
+            #tiauBar b { font-size: 12px; letter-spacing: 1px; }
+        }
+        #tiauVideo { position: fixed; inset: 0; width: 100%; height: 100%; background: #000; z-index: 45; object-fit: contain; }
+    </style>
+</head>
+
+<body>
+    <div id="transfer" align=center>
+        <div class="emscripten" id="status">Downloading...</div>
+        <div class="emscripten"><progress value="0" max="100" id="progress"></progress></div>
+    </div>
+
+    <canvas class="emscripten" id="canvas" width="1px" height="1px" oncontextmenu="event.preventDefault()" tabindex=1></canvas>
+    <canvas class="emscripten" id="canvas3d" width="1440px" height="810px" oncontextmenu="event.preventDefault()" tabindex=1 hidden></canvas>
+
+    <div id="infobox">Loading, please wait ...</div>
+    <div id=html></div>
+    <div id="system" hidden></div>
+    <div id=box hidden><div id="info"></div><iframe id="iframe" name="iframe" src="about:blank"></iframe></div>
+    <div id="dlg" hidden><input type="file" id="dlg_multifile" multiple></div>
+    <div id="pyconsole"><div id="terminal" tabIndex=1></div></div>
+
+    <!-- Ladebildschirm -->
+    <div id="tiauLoad" class="tiau-overlay">
+        <div class="tiau-title">THALHEIMER <span>IS AMONG US</span></div>
+        <p class="tiau-sub">Das Spiel läuft direkt auf deinem Gerät - flüssig, egal wie viele mitspielen.</p>
+        <div class="tiau-spinner"></div>
+        <div id="tiauLoadText">Lade Spiel ...</div>
+        <div class="tiau-hint">Beim ersten Mal werden ca. 20 MB geladen, danach geht es schneller (Browser-Cache).</div>
+    </div>
+
+    <!-- Spiel beendet / Beitritt fehlgeschlagen -->
+    <div id="tiauEnd" class="tiau-overlay hidden">
+        <div class="tiau-box">
+            <h2 id="tiauEndTitle" style="margin-top:0">Spiel beendet</h2>
+            <p id="tiauEndText"></p>
+            <button id="tiauBack" class="tiau-btn">Zurück zur Raumliste</button>
+        </div>
+    </div>
+
+    <!-- Werkzeugleiste oben rechts -->
+    <div id="tiauBar" class="hidden">
+        <span>Raum <b id="tiauCode">-----</b></span>
+        <button id="tiauCopy" class="tb">Link kopieren</button>
+        <button id="tiauSound" class="tb">Ton: an</button>
+        <button id="tiauFull" class="tb">Vollbild</button>
+        <button id="tiauLeave" class="tb danger">Verlassen</button>
+        <span id="tiauFps"></span>
+    </div>
+    <div id="tiauToast"></div>
+    <video id="tiauVideo" class="hidden" playsinline preload="none"></video>
+
+    <script type="application/javascript">
+    // Wird von pythons.js aufgerufen, bevor Python geladen ist
+    async function custom_onload(debug_hidden) {}
+    function custom_prerun() {}
+    function custom_postrun() {}
+    function debug() { python.config.debug = true; }
+    function info_inline(data) {}
+    function info_online(url) {}
+    function frame_online(url) {}
+    </script>
+</body>
+</html>

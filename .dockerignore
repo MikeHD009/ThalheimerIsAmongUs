@@ -1,0 +1,14 @@
+.git
+.gitattributes
+.claude
+__pycache__
+**/__pycache__
+*.pyc
+*.md
+setup.sh
+remove.sh
+start_lokal_windows.bat
+Assets/AmogususRollen.docx
+build
+web/cdn
+web/client

@@ -187,3 +187,85 @@ def keys_from_bitmask(mask):
         if mask & (1 << i):
             keys.append(key)
     return keys
+
+
+# =========================
+# NEU: Gemeinsame Regeln fuer Server UND Client (vorher doppelt in server.py/main.py)
+# =========================
+RAMONA_MIN_PLAYERS = 4        # Ramona wird nur ab so vielen Spielern zufaellig vergeben
+MAX_IMPOSTERS = 3             # harte Obergrenze fuer die eingestellte Imposter-Anzahl
+
+# Feste Rollen-Zuteilung durch den Host ("Cheat"): Codes pro Spieler
+FIXED_NONE = 255              # Zufall (normal)
+FIXED_IMPOSTER = 254          # sicher Imposter (Spezialrolle weiterhin zufaellig)
+FIXED_CREW = 253              # sicher Besatzung (Spezialrolle weiterhin zufaellig)
+FIXED_OPTIONS = [FIXED_NONE, FIXED_CREW, FIXED_IMPOSTER] + list(range(len(ROLE_ORDER)))
+
+
+def max_imposters_for(n_players):
+    """Wie viele Imposter maximal einstellbar sind: es muss immer mindestens ein
+    Crewmate uebrig bleiben UND es muss mehr freundliche als feindliche Spieler geben."""
+    if n_players < 3:
+        return 1
+    return max(1, min(MAX_IMPOSTERS, (n_players - 1) // 2))
+
+
+def fixed_team(code):
+    """Team, das eine feste Zuteilung erzwingt (oder None fuer Zufall)."""
+    if code == FIXED_IMPOSTER:
+        return TEAM_IMPOSTOR
+    if code == FIXED_CREW:
+        return TEAM_CREW
+    key = role_key_of(code) if code not in (FIXED_NONE, None) else None
+    return team_of(key)
+
+
+def fixed_label(code):
+    if code == FIXED_IMPOSTER:
+        return "Imposter"
+    if code == FIXED_CREW:
+        return "Crewmate"
+    key = role_key_of(code) if code not in (FIXED_NONE, None) else None
+    if key is None:
+        return "Zufall"
+    return ROLES[key]["name"]
+
+
+def setup_status(n_players, imposter_count, enabled_keys, fixed_codes=()):
+    """Prueft die Rollen-Konfiguration vor dem Start (Server und Client benutzen DIESELBE Funktion).
+
+    Regeln:
+      - Mindestens ein Imposter bzw. eine feindliche Rolle ist Pflicht.
+      - Mindestens ein Crewmate ist Pflicht und es muss mehr freundliche als feindliche Spieler geben
+        (Imposter zaehlen komplett zur feindlichen Seite).
+      - Feindliche Spezialrollen belegen Imposter-Plaetze, jede Spezialrolle hoechstens einmal.
+      - NEU: feste Zuteilungen des Hosts zaehlen mit (fest zugeteilte Imposter erhoehen ggf. die
+        Imposter-Anzahl, fest zugeteilte Spezialrollen werden immer vergeben).
+    Rueckgabe: (ok, meldung, tatsaechliche_imposter_anzahl)"""
+    fixed_codes = [c for c in fixed_codes if c not in (FIXED_NONE, None)]
+    fixed_keys = {role_key_of(c) for c in fixed_codes if role_key_of(c) is not None}
+    special = set(enabled_keys) | fixed_keys
+    fixed_imps = sum(1 for c in fixed_codes if fixed_team(c) == TEAM_IMPOSTOR)
+    n_imp = max(imposter_count, fixed_imps)
+    enemy_n = sum(1 for k in special if team_of(k) == TEAM_IMPOSTOR)
+    friendly_n = sum(1 for k in special if team_of(k) == TEAM_CREW)
+    ramona_fixed = "ramona" in fixed_keys
+    ramona_on = ramona_fixed or ("ramona" in special and n_players >= RAMONA_MIN_PLAYERS)
+
+    if n_players < 2:
+        return False, "Zu wenige Spieler verbunden.", n_imp
+    if n_imp < 1:
+        return False, "Mindestens ein Imposter ist Pflicht.", n_imp
+    if enemy_n > n_imp:
+        return False, f"Zu viele feindliche Rollen ({enemy_n}) für {n_imp} Imposter.", n_imp
+    crew_slots = n_players - n_imp - (1 if ramona_on else 0)
+    if crew_slots < 1:
+        return False, "Mindestens ein Crewmate ist Pflicht - zu wenige Spieler.", n_imp
+    if crew_slots <= n_imp:
+        return False, "Es müssen mehr freundliche als feindliche Spieler sein.", n_imp
+    if friendly_n > crew_slots:
+        return False, f"Zu viele freundliche Rollen ({friendly_n}) für {crew_slots} Besatzungsplätze.", n_imp
+    fixed_crew = sum(1 for c in fixed_codes if fixed_team(c) == TEAM_CREW)
+    if fixed_crew > crew_slots:
+        return False, "Zu viele Spieler fest der Besatzung zugeteilt.", n_imp
+    return True, "Konfiguration in Ordnung.", n_imp
