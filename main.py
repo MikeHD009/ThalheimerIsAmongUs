@@ -341,9 +341,10 @@ class Player:
         self.is_moving = False        # NEU: Laufanimation - bewegt sich der Spieler gerade?
         self.walk_phase = 0.0         # NEU: Laufanimation - Phase der Auf-/Ab-Schwingung
 
-    def move(self, keys, hitboxes, speed_factor=1.0):
+    def move(self, keys, hitboxes, speed_factor=1.0, axis=None):
         """speed_factor = Frame-Dauer relativ zu 60 FPS. Bei 60 FPS (=1.0) exakt wie bisher;
-        NEU: im Browser mit 50 oder 144 Hz laeuft die Figur dadurch trotzdem gleich schnell."""
+        NEU: im Browser mit 50 oder 144 Hz laeuft die Figur dadurch trotzdem gleich schnell.
+        NEU: axis = Touch-Joystick (x, y je -1..1) - stufenlos in jede Richtung und Geschwindigkeit."""
         old_x = self.rect.x
         old_y = self.rect.y
         dx, dy = 0, 0
@@ -356,16 +357,24 @@ class Player:
         if keys[pygame.K_a] or keys[pygame.K_LEFT]:  dx -= current_speed
         if keys[pygame.K_d] or keys[pygame.K_RIGHT]: dx += current_speed
 
-        # NEU: Blickrichtung nur anhand der horizontalen Eingabe setzen (kein Sprung/Hüpfen,
-        # nur ein reiner Links/Rechts-Flip des Bildes)
-        if dx < 0:
-            self.facing_left = True
-        elif dx > 0:
-            self.facing_left = False
-
         if dx != 0 and dy != 0:
             dx *= 0.7071
             dy *= 0.7071
+
+        if axis is not None and (axis[0] or axis[1]):
+            dx += axis[0] * current_speed
+            dy += axis[1] * current_speed
+            length = (dx * dx + dy * dy) ** 0.5
+            if length > current_speed:      # Tastatur + Joystick zusammen: nicht schneller als normal
+                dx *= current_speed / length
+                dy *= current_speed / length
+
+        # NEU: Blickrichtung nur anhand der horizontalen Eingabe setzen (kein Sprung/Hüpfen,
+        # nur ein reiner Links/Rechts-Flip des Bildes). Kleine Joystick-Abweichungen drehen nicht.
+        if dx < -0.15 * current_speed:
+            self.facing_left = True
+        elif dx > 0.15 * current_speed:
+            self.facing_left = False
 
         # Nachkommastellen aufheben, damit auch kleine Schritte (hohe Bildrate) nicht verloren gehen
         self.move_rest_x = getattr(self, "move_rest_x", 0.0) + dx
@@ -1496,6 +1505,11 @@ def draw_meeting():
         ghost_txt = chat_font.render("Als Geist kannst du nicht mehr schreiben.", True, (185, 188, 200))
         screen.blit(ghost_txt, (chat_input_rect.x + 10, chat_input_rect.centery - ghost_txt.get_height() // 2))
         return
+    if touch_mode and not meeting_chat_input:
+        # NEU: Handy/Tablet - Antippen oeffnet die Bildschirmtastatur (Eingabefeld der Webseite)
+        hint = chat_font.render("Hier tippen, um zu schreiben ...", True, (120, 124, 140))
+        screen.blit(hint, (chat_input_rect.x + 10, chat_input_rect.centery - hint.get_height() // 2))
+        return
     input_display = meeting_chat_input
     # Text abschneiden, falls er breiter als das Feld wird (neueste Zeichen bleiben sichtbar)
     while chat_font.size(input_display + "|")[0] > chat_input_rect.width - 16 and len(input_display) > 0:
@@ -2055,7 +2069,7 @@ def left_panel_model():
 
     status = "GEIST" if my_player.is_dead else ("IM VENT" if my_player.is_venting else "")
     return (WIDTH, HEIGHT, my_id, rk, my_player.role_display_name, my_player.role, my_player.is_dead, status,
-            global_task_progress, global_task_max, header, tuple(lines))
+            global_task_progress, global_task_max, header, tuple(lines), touch_mode)
 
 def draw_left_panel():
     """NEU: Linke Leiste - Rollenkarte, Gesamtfortschritt, eigene Aufgaben/Auftrag, Rollen-Status
@@ -2078,7 +2092,7 @@ def draw_left_panel():
     screen.blit(_left_panel_cache["surf"], (0, 0))
 
 def _render_left_panel(target, model):
-    (_w, _h, _id, rk, display_name, team_role, is_dead, status, progress, progress_max, header, lines) = model
+    (_w, _h, _id, rk, display_name, team_role, is_dead, status, progress, progress_max, header, lines, touch) = model
     left, _right = hud.side_panel_rects(WIDTH, HEIGHT)
     s = HEIGHT / 810.0
     pad = int(16 * s)
@@ -2137,7 +2151,7 @@ def _render_left_panel(target, model):
                 cur = word
         if cur:
             wrapped.append((cur, color, sym if first else None))
-    controls_h = int(78 * s)
+    controls_h = int(300 * s) if touch else int(78 * s)   # Touch: unten liegt der Joystick
     max_h = HEIGHT - y - controls_h - 2 * gap
     body_h = min(max_h, int(38 * s) + len(wrapped) * line_h + int(8 * s))
     tcard = pygame.Rect(x, y, w, max(int(60 * s), body_h))
@@ -2158,7 +2172,9 @@ def _render_left_panel(target, model):
         target.blit(f_line.render(text, True, color), (bx + int(20 * s), ly))
         ly += line_h
 
-    # --- Steuerung (kurz) ---
+    # --- Steuerung (kurz) - auf Handy/Tablet liegt hier stattdessen der Joystick ---
+    if touch:
+        return
     ctrl = pygame.Rect(x, HEIGHT - pad - controls_h, w, controls_h)
     hud.draw_panel_card(target, ctrl, border=(55, 60, 80))
     f_small = fx.font(int(13 * s), False)
@@ -2175,7 +2191,7 @@ def draw_game_hud():
     draw_left_panel()
 
     if task_manager.active_task is None and not meeting_active:
-        current_buttons = hud.layout_buttons(build_action_buttons(), WIDTH, HEIGHT)
+        current_buttons = hud.layout_buttons(build_action_buttons(), WIDTH, HEIGHT, touch_mode)
         hud.draw_buttons(screen, current_buttons)
     else:
         current_buttons = []
@@ -2217,6 +2233,17 @@ def draw_game_hud():
 
 def get_lobby_layout():
     """NEU: Alle Lobby-Knoepfe an einer Stelle (Zeichnen UND Klicken benutzen dieselben Rechtecke)."""
+    if touch_mode:
+        # Handy/Tablet: links unten liegt der Joystick -> Menue-Knoepfe unter den Raum-Code,
+        # Imposter -/+ gross genug fuer den Finger
+        return {
+            "start": pygame.Rect(WIDTH - 240, HEIGHT - 100, 200, 60),
+            "roles": pygame.Rect(40, 160, 200, 60),
+            "settings": pygame.Rect(40, 230, 200, 60),
+            "assign": pygame.Rect(40, 300, 200, 60),
+            "minus": pygame.Rect(WIDTH // 2 - 160, HEIGHT - 165, 60, 60),
+            "plus": pygame.Rect(WIDTH // 2 + 100, HEIGHT - 165, 60, 60),
+        }
     return {
         "start": pygame.Rect(WIDTH - 240, HEIGHT - 100, 200, 60),
         "roles": pygame.Rect(40, HEIGHT - 100, 200, 60),
@@ -2248,8 +2275,9 @@ def get_settings_layout():
     y0 = 220
     for i, (key, _label, _sub) in enumerate(SETTING_ROWS):
         row = pygame.Rect(WIDTH // 2 - 420, y0 + i * 110, 840, 90)
-        minus = pygame.Rect(row.right - 250, row.centery - 26, 52, 52)
-        plus = pygame.Rect(row.right - 70, row.centery - 26, 52, 52)
+        bs = 70 if touch_mode else 52          # NEU: groesser fuer den Finger
+        minus = pygame.Rect(row.right - 198 - bs, row.centery - bs // 2, bs, bs)
+        plus = pygame.Rect(row.right - 18 - bs, row.centery - bs // 2, bs, bs)
         rows.append((key, row, minus, plus))
     back = pygame.Rect(40, HEIGHT - 100, 200, 60)
     return rows, back
@@ -2375,7 +2403,8 @@ def draw_lobby():
         screen.blit(code_lbl, (40, 40))
         screen.blit(code_txt, (40, 40 + code_lbl.get_height() + 4))
     # FIX: lag vorher genau unter dem ROLLEN-Button des Hosts
-    screen.blit(small_font.render(f"Spieler online: {len(player_names)} / 15", True, (255, 255, 255)), (40, HEIGHT - 290))
+    online_y = 375 if touch_mode else HEIGHT - 290   # Touch: unter den nach oben verlegten Knoepfen
+    screen.blit(small_font.render(f"Spieler online: {len(player_names)} / 15", True, (255, 255, 255)), (40, online_y))
     # NEU: aktuelle Meeting-Einstellungen fuer alle sichtbar
     summary = chat_font.render(settings_summary(), True, (190, 200, 230))
     screen.blit(summary, (WIDTH // 2 - summary.get_width() // 2, HEIGHT - 240))
@@ -2523,6 +2552,75 @@ active_task_idx = -1
 TEAM_NAMES = {0: "Besatzung", 1: "Imposter", 2: "Eigenständig"}
 TEAM_COLORS = {0: (100, 220, 255), 1: (255, 90, 90), 2: (255, 210, 90)}
 
+# NEU: Touch-Steuerung fuer Handy/Tablet. Die Webseite (web/touch.js) erkennt das Geraet, zeigt
+# Joystick + Zusatzknoepfe und liefert hier Joystick-Richtung, Tastendruecke und Chat-Text.
+TOUCH_OFF, TOUCH_TABLET, TOUCH_PHONE = 0, 1, 2
+touch_mode = TOUCH_OFF
+touch_axis = (0.0, 0.0)        # Joystick x/y in -1..1 (Totzone schon abgezogen)
+touch_ctx_sent = None          # zuletzt an die Webseite gemeldete Bedienelemente
+# Zusatzknoepfe der Webseite -> Taste (die Aktions-Buttons zeichnet das Spiel selbst, die werden angetippt)
+TOUCH_KEYS = {"q": pygame.K_q, "a": pygame.K_a, "d": pygame.K_d}
+
+def post_key_tap(code):
+    pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=code, unicode="", mod=0, scancode=0))
+    pygame.event.post(pygame.event.Event(pygame.KEYUP, key=code, unicode="", mod=0, scancode=0))
+
+def send_meeting_chat(text):
+    """Chat-Nachricht im Meeting senden (Enter-Taste oder Touch-Eingabefeld). Tote schreiben nicht."""
+    if state != "game" or not meeting_active or my_player.is_dead:
+        return
+    msg = text.strip()
+    if not msg:
+        return
+    # auf 120 Bytes kuerzen, ohne ein Umlaut-Zeichen zu zerschneiden
+    msg_bytes = msg.encode("utf-8")[:120].decode("utf-8", "ignore").encode("utf-8")
+    try: sock.sendall(struct.pack("!BB", 50, len(msg_bytes)) + msg_bytes)
+    except: pass
+
+def touch_poll():
+    """NEU: Joystick, Touch-Knoepfe und Chat-Text von der Webseite abholen (einmal pro Bild)."""
+    global touch_mode, touch_axis
+    data = web_bridge.poll_touch()
+    if data is None:
+        return
+    mode, ax, ay, keys, texts = data
+    touch_mode = mode
+    touch_axis = (ax, ay) if mode else (0.0, 0.0)
+    for name in keys:
+        code = TOUCH_KEYS.get(name)
+        if code is not None:
+            post_key_tap(code)
+    for text in texts:
+        send_meeting_chat(text)
+
+def touch_context():
+    """Welche Touch-Bedienelemente die Webseite gerade zeigen soll: Joystick, Schliessen (wie Q),
+    Vent-Pfeile (wie A/D) und das Chat-Feld im Meeting (Rechteck in Spielkoordinaten)."""
+    ctx = {"joy": 0, "close": 0, "vent": 0, "chat": None}
+    if state == "lobby" and my_id is not None:
+        ctx["joy"] = 1
+    elif state == "game" and game_started and end_screen is None:
+        if meeting_active:
+            if not my_player.is_dead and not cutscene_active():
+                r = get_meeting_layout()[3]
+                ctx["chat"] = [r.x, r.y, r.width, r.height]
+        elif not cutscene_active() and not ghost_intro_blocking() and intro_timer <= 0:
+            task_open = task_manager.active_task is not None
+            ctx["close"] = 1 if (task_open or show_minimap or show_role_info) else 0
+            ctx["vent"] = 1 if my_player.is_venting else 0
+            ctx["joy"] = 1 if not (task_open or show_minimap or show_role_info or my_player.is_venting) else 0
+    return ctx
+
+def touch_sync():
+    """Aenderungen an den Touch-Bedienelementen an die Webseite melden (nur bei Aenderung)."""
+    global touch_ctx_sent
+    if not (BROWSER or WEB_MODE):
+        return
+    ctx = touch_context()
+    if ctx != touch_ctx_sent:
+        touch_ctx_sent = ctx
+        web_bridge.send_event(dict(ctx, t="touchctx"))
+
 def cutscene_active():
     """NEU: Waehrend Todes-/Rauswurf-Animation ist keine Steuerung moeglich."""
     return death_anim is not None or eject_anim is not None
@@ -2659,7 +2757,7 @@ def draw_action_buttons_layer():
         spec.rect = pygame.Rect(WIDTH - size - int(16 * s), int(16 * s), size, size)
         current_buttons = [spec]
     else:
-        current_buttons = hud.layout_buttons(build_action_buttons(), WIDTH, HEIGHT)
+        current_buttons = hud.layout_buttons(build_action_buttons(), WIDTH, HEIGHT, touch_mode)
     hud.draw_buttons(screen, current_buttons)
 
 # =========================
@@ -2914,6 +3012,7 @@ async def main_loop():
                     ramona_stand_timer = 0.0
 
         perf_mark("timers")
+        touch_poll()                     # NEU: Handy/Tablet - Joystick + Touch-Knoepfe
         for event in pygame.event.get():
             # NEU: True, sobald ein Klick vom Rollen-Info-Panel verbraucht wurde (dann nicht abstimmen)
             role_info_click_consumed = False
@@ -3052,11 +3151,7 @@ async def main_loop():
                         if my_player.is_dead:
                             pass   # NEU: Tote Spieler koennen nicht in den Chat schreiben
                         elif event.key == pygame.K_RETURN:
-                            msg = meeting_chat_input.strip()
-                            if msg:
-                                msg_bytes = msg.encode("utf-8")[:120]
-                                try: sock.sendall(struct.pack("!BB", 50, len(msg_bytes)) + msg_bytes)
-                                except: pass
+                            send_meeting_chat(meeting_chat_input)
                             meeting_chat_input = ""
                         elif event.key == pygame.K_BACKSPACE:
                             meeting_chat_input = meeting_chat_input[:-1]
@@ -3357,13 +3452,15 @@ async def main_loop():
             # NEU: Normale WASD Bewegung blockieren, falls man im Vent sitzt oder (Vladimir) noch
             # als frisch getöteter Geist das Intro abwarten muss
             if not my_player.is_venting and not meeting_active and not ghost_intro_blocking() and not cutscene_active():
-                moved_this_frame = my_player.move(pygame.key.get_pressed(), hitboxes, min(3.0, dt * 60.0))
+                moved_this_frame = my_player.move(pygame.key.get_pressed(), hitboxes, min(3.0, dt * 60.0),
+                                                    touch_axis if touch_mode else None)
                 if moved_this_frame:
                     try: sock.sendall(struct.pack('!Bii', 2, int(my_player.rect.x), int(my_player.rect.y)))
                     except: running = False
 
         elif state == "lobby" and not game_started and my_id is not None:
-            moved_this_frame = my_player.move(pygame.key.get_pressed(), lobby_hitboxes, min(3.0, dt * 60.0))
+            moved_this_frame = my_player.move(pygame.key.get_pressed(), lobby_hitboxes, min(3.0, dt * 60.0),
+                                                touch_axis if touch_mode else None)
             if moved_this_frame:
                 try: sock.sendall(struct.pack('!Bii', 2, int(my_player.rect.x), int(my_player.rect.y)))
                 except: running = False
@@ -3679,6 +3776,7 @@ async def main_loop():
         else:
             pygame.display.update()
         perf_mark("present")
+        touch_sync()                     # NEU: passende Touch-Knoepfe einblenden
         perf_frame_end()
         if BROWSER and browser_conn is not None:
             browser_conn.flush()         # alles in diesem Frame Gesendete in EINER Nachricht

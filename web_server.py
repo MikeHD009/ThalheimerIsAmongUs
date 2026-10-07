@@ -597,8 +597,16 @@ async def on_shutdown(_app):
         await manager.close(room, "Server wird beendet")
 
 
+async def revalidate_code(request, response):
+    """NEU: Webseiten-Code und Spielpaket immer beim Server nachfragen lassen (unveraendert -> kurze
+    Antwort 304). Sonst nutzen Handys nach einem Update noch tagelang alte Dateien aus dem Cache."""
+    if request.path.startswith(("/static/", "/play/")) and "Cache-Control" not in response.headers:
+        response.headers["Cache-Control"] = "no-cache"
+
+
 def make_app():
     app = web.Application()
+    app.on_response_prepare.append(revalidate_code)
     app.router.add_get("/", index)
     app.router.add_get("/ws", ws_handler)
     app.router.add_get("/api/rooms", api_rooms)

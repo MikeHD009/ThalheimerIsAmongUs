@@ -139,6 +139,10 @@ def recv_exact(conn, n):
         buf += chunk
     return buf
 
+def is_invisible(pid):
+    """NEU: Vogelscheicher ist gerade unsichtbar (Attrappe steht) -> kann nicht getoetet werden."""
+    return time.time() < invisible_until.get(pid, 0)
+
 def team_byte_of(pid):
     team = player_base_team.get(pid, roles.TEAM_CREW)
     return 1 if team == roles.TEAM_IMPOSTOR else (2 if team == roles.TEAM_INDEPENDENT else 0)
@@ -616,7 +620,10 @@ def process_packet(conn, player_id, packet, payload):
         if (game_active and not in_meeting
                 and player_id in active_imposters and player_id not in dead_players
                 and time.time() >= global_immortal_until):
-            if target_id in clients and target_id not in dead_players and target_id not in active_imposters:
+            # NEU: Vogelscheicher ist waehrend der Unsichtbarkeit nicht toetbar - wer seine
+            #      Attrappe angreift, verbraucht nur den eigenen Kill (Cooldown), niemand stirbt
+            if (target_id in clients and target_id not in dead_players and target_id not in active_imposters
+                    and not is_invisible(target_id)):
                 dead_players.add(target_id)
                 killer_role = player_roles.get(player_id)
                 no_corpse = 1 if killer_role == "steinermike" else 0
@@ -646,7 +653,8 @@ def process_packet(conn, player_id, packet, payload):
 
         # Noah: Fallenkollision pruefen
         if (game_active and not in_meeting and player_id not in dead_players
-                and time.time() >= global_immortal_until and active_traps):
+                and time.time() >= global_immortal_until and active_traps
+                and not is_invisible(player_id)):                 # NEU: unsichtbar = sicher
             for trap_id, (owner_id, tx, ty) in list(active_traps.items()):
                 if owner_id != player_id and abs(x - tx) < TRAP_HIT_RADIUS and abs(y - ty) < TRAP_HIT_RADIUS:
                     del active_traps[trap_id]
@@ -657,7 +665,7 @@ def process_packet(conn, player_id, packet, payload):
                     break
 
         # Vogelscheicher: waehrend Unsichtbarkeit Position nicht an andere weiterleiten
-        if time.time() < invisible_until.get(player_id, 0):
+        if is_invisible(player_id):
             pass
         else:
             broadcast_to_all(struct.pack("!BBii", 2, player_id, x, y), exclude_id=player_id)
@@ -751,7 +759,8 @@ def process_packet(conn, player_id, packet, payload):
         reported_room = struct.unpack("!B", payload)[0]
         if (game_active and not in_meeting and time.time() < window_hazard_active_until
                 and reported_room == window_hazard_room
-                and player_id not in dead_players and time.time() >= global_immortal_until):
+                and player_id not in dead_players and time.time() >= global_immortal_until
+                and not is_invisible(player_id)):
             dead_players.add(player_id)
             # NEU: Evelyns Fensterfalle hinterlaesst jetzt eine ganz normale Leiche
             broadcast_to_all(struct.pack("!BBBBBB", 31, player_id, 0, 0, DEATH_FLAG_WINDOW, NO_KILLER))

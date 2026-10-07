@@ -169,20 +169,24 @@ def side_panel_rects(screen_w, screen_h):
     return left, right
 
 
-def layout_buttons(specs, screen_w, screen_h):
+def layout_buttons(specs, screen_w, screen_h, touch=0):
     """Ordnet die Buttons unten rechts in der rechten Leiste an (2 Spalten, von unten nach oben).
-    Kleine Buttons (Karte/Rolle) kommen in eine eigene Reihe darueber."""
+    Kleine Buttons (Karte/Rolle) kommen in eine eigene Reihe darueber.
+    NEU: touch = 1 (Tablet) / 2 (Handy) -> groessere Buttons, die man gut mit dem Daumen trifft."""
     _left, right = side_panel_rects(screen_w, screen_h)
     scale = screen_h / 810.0
     gap = int(12 * scale)
     margin = int(18 * scale)
-    big = int(116 * scale)
+    big = int({0: 116, 1: 124, 2: 132}.get(touch, 116) * scale)
     avail = max(right.width, 140) - 2 * margin
     if 2 * big + gap > avail:
         big = max(64, (avail - gap) // 2)
-    small = int(big * 0.62)
+    small = int(big * (0.74 if touch else 0.62))
     x_right = screen_w - margin
 
+    if touch:
+        for spec in specs:
+            spec.key_label = ""
     main_specs = [s for s in specs if not s.small]
     small_specs = [s for s in specs if s.small]
     y = screen_h - margin
@@ -276,13 +280,14 @@ def _render_button(spec, t):
     else:
         pygame.draw.rect(surf, (*col, 200) if spec.enabled else (80, 82, 92, 220), local, border_w, border_radius=radius)
 
-    # Tastenhinweis oben links
-    kf = font(max(9, int(local.width * (0.13 if not spec.small else 0.2))))
-    key_s = kf.render(spec.key_label, True, (20, 20, 25))
-    kr = pygame.Rect(0, 0, max(key_s.get_width() + 10, key_s.get_height() + 4), key_s.get_height() + 2)
-    kr.topleft = (5, 5)
-    pygame.draw.rect(surf, (235, 235, 240) if spec.enabled else (150, 150, 158), kr, border_radius=5)
-    surf.blit(key_s, key_s.get_rect(center=kr.center))
+    # Tastenhinweis oben links (auf Handy/Tablet ohne Tastatur weggelassen)
+    if spec.key_label:
+        kf = font(max(9, int(local.width * (0.13 if not spec.small else 0.2))))
+        key_s = kf.render(spec.key_label, True, (20, 20, 25))
+        kr = pygame.Rect(0, 0, max(key_s.get_width() + 10, key_s.get_height() + 4), key_s.get_height() + 2)
+        kr.topleft = (5, 5)
+        pygame.draw.rect(surf, (235, 235, 240) if spec.enabled else (150, 150, 158), kr, border_radius=5)
+        surf.blit(key_s, key_s.get_rect(center=kr.center))
 
     # Zaehler oben rechts
     if spec.badge:

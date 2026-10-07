@@ -3,6 +3,8 @@
  * Diese Datei verbindet Python mit dem Browser:
  *   window.tiauNet  - WebSocket zum Server (Bytes als base64, siehe browser_bridge.py)
  *   window.tiauGame - Sounds/Video/Spielende aus Python, Ladeanzeige, Werkzeugleiste
+ *   Touch-Steuerung - Joystick/Knoepfe fuer Handy und Tablet (web/touch.js), Python holt sie
+ *                     jedes Bild mit tiauGame.touchPoll() ab
  */
 (function () {
   "use strict";
@@ -78,6 +80,15 @@
   const unlockAudio = () => audio.unlock();
   window.addEventListener("keydown", unlockAudio, true);
   window.addEventListener("pointerdown", unlockAudio, true);
+  // Handys erlauben Ton erst beim Loslassen des Fingers (pointerdown zaehlt dort nicht)
+  window.addEventListener("pointerup", unlockAudio, true);
+  window.addEventListener("touchend", unlockAudio, true);
+
+  // ---------------------------------------------------------------- Touch (Handy/Tablet)
+  let touch = null;
+  let lastCtx = null;
+  const tstate = { m: 0, x: 0, y: 0, k: [], t: [], changed: true };
+  function touchChanged() { tstate.changed = true; }
 
   // ---------------------------------------------------------------- Video (Vladimir)
   function playVideo(src) {
@@ -103,6 +114,16 @@
   let ended = false;
   window.tiauGame = {
     videoEnded: false,
+    // von Python einmal pro Bild abgefragt: "" = nichts Neues
+    touchPoll() {
+      if (!tstate.changed) return "";
+      tstate.changed = false;
+      const out = JSON.stringify({ m: tstate.m, x: tstate.x, y: tstate.y, k: tstate.k, t: tstate.t });
+      tstate.k = [];
+      tstate.t = [];
+      return out;
+    },
+    touchState() { return { mode: tstate.m, x: tstate.x, y: tstate.y, ctx: lastCtx }; },
     loading(text) {
       const t = $("tiauLoadText");
       if (t) t.textContent = text;
@@ -123,7 +144,10 @@
       let ev;
       try { ev = JSON.parse(json); } catch (e) { return; }
       if (audio.handle(ev)) return;
-      if (ev.t === "video") {
+      if (ev.t === "touchctx") {
+        lastCtx = ev;
+        if (touch) touch.setContext(ev);
+      } else if (ev.t === "video") {
         if (ev.on) playVideo(ev.src); else stopVideo(false);
       } else if (ev.t === "end") {
         showEnd(ev.text || "Die Verbindung wurde beendet.", ev.reason);
@@ -175,6 +199,17 @@
   }
 
   document.addEventListener("DOMContentLoaded", () => {
+    if (window.TiauTouch) {
+      touch = new window.TiauTouch({
+        canvas: $("canvas"),
+        toolbar: $("tiauBar"),
+        onMode: (m) => { tstate.m = m; touchChanged(); },
+        onAxis: (x, y) => { tstate.x = x; tstate.y = y; touchChanged(); },
+        onKey: (k) => { tstate.k.push(k); touchChanged(); },
+        onText: (text) => { tstate.t.push(text); touchChanged(); },
+      });
+      if (lastCtx) touch.setContext(lastCtx);
+    }
     $("tiauCode").textContent = ROOM || "-----";
     document.title = `Raum ${ROOM} - Thalheimer is Among Us`;
     $("tiauCopy").addEventListener("click", () => { copyLink(); focusCanvas(); });

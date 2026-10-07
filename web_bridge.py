@@ -46,6 +46,9 @@ _mouse_pos = [0, 0]
 _mouse_buttons = [False, False, False]
 _video_ended = threading.Event()
 _quit_requested = threading.Event()
+# NEU: Touch-Steuerung (Handy/Tablet) - wird von app.js/touch.js geschickt, main.py holt sie mit poll_touch()
+_touch_lock = threading.Lock()
+_touch = {"m": 0, "x": 0.0, "y": 0.0, "k": [], "t": [], "new": False}
 
 _frame_lock = threading.Lock()
 _frame_ready = threading.Event()
@@ -487,6 +490,9 @@ def _handle_input(msg):
         _pressed_keys.clear()
         for i in range(3):
             _mouse_buttons[i] = False
+        _handle_touch("joy", {"x": 0, "y": 0})     # Joystick loslassen
+    elif t in ("touch", "joy", "tk", "txt"):
+        _handle_touch(t, msg)
     elif t == "video_end":
         _video_ended.set()
     elif t == "ack":
@@ -498,6 +504,40 @@ def _handle_input(msg):
         with _frame_lock:
             _credits = 2
         _force_full.set()
+
+
+def _clamp(value, lo, hi):
+    try:
+        return max(lo, min(hi, float(value)))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _handle_touch(t, msg):
+    with _touch_lock:
+        if t == "touch":
+            _touch["m"] = int(_clamp(msg.get("m", 0), 0, 2))
+        elif t == "joy":
+            _touch["x"] = _clamp(msg.get("x", 0), -1, 1)
+            _touch["y"] = _clamp(msg.get("y", 0), -1, 1)
+        elif t == "tk" and len(_touch["k"]) < 20:
+            _touch["k"].append(str(msg.get("k", ""))[:8])
+        elif t == "txt" and len(_touch["t"]) < 5:
+            _touch["t"].append(str(msg.get("s", ""))[:200])
+        _touch["new"] = True
+
+
+def poll_touch():
+    """NEU: Touch-Steuerung abholen - gleiche Rueckgabe wie browser_bridge.poll_touch():
+    None (nichts Neues) oder (modus 0/1/2, joystick_x, joystick_y, [tasten], [chat-texte])."""
+    if not ACTIVE:
+        return None
+    with _touch_lock:
+        if not _touch["new"]:
+            return None
+        keys, texts = _touch["k"], _touch["t"]
+        _touch["k"], _touch["t"], _touch["new"] = [], [], False
+        return _touch["m"], _touch["x"], _touch["y"], keys, texts
 
 
 def _stdin_reader():

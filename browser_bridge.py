@@ -59,6 +59,32 @@ def signal_ready():
         pass
 
 
+def _clamp(value, lo, hi):
+    try:
+        return max(lo, min(hi, float(value)))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def poll_touch():
+    """NEU: Touch-Steuerung (Handy/Tablet) aus web/touch.js abholen.
+    Rueckgabe: None (nichts Neues) oder (modus 0/1/2, joystick_x, joystick_y, [tasten], [chat-texte])."""
+    try:
+        raw = window.tiauGame.touchPoll()
+    except Exception:
+        return None
+    if not raw:
+        return None
+    try:
+        d = json.loads(str(raw))
+    except ValueError:
+        return None
+    mode = int(_clamp(d.get("m", 0), 0, 2))
+    keys = [str(k)[:8] for k in d.get("k", [])][:20]
+    texts = [str(t)[:200] for t in d.get("t", [])][:5]
+    return mode, _clamp(d.get("x", 0), -1, 1), _clamp(d.get("y", 0), -1, 1), keys, texts
+
+
 _last_fps_report = 0.0
 
 

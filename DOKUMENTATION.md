@@ -1,8 +1,9 @@
 # Thalheimer is Among Us – Server-Umbau & Änderungen
 
 Dieses Dokument hält fest, **was** umgesetzt wurde, **wie** alles aufgebaut ist und **wie** man den
-Server auf Ubuntu einrichtet. Grundlage waren `Änderungen.docx` (Phase 1) und die zweite
-Änderungsliste (Phase 2: Regeln, Einstellungen, Cheat-Zuteilung und vor allem **flüssiges Spielen**).
+Server auf Ubuntu einrichtet. Grundlage waren `Änderungen.docx` (Phase 1), die zweite
+Änderungsliste (Phase 2: Regeln, Einstellungen, Cheat-Zuteilung und vor allem **flüssiges Spielen**)
+und die dritte (Phase 3: Vogelscheicher-Schutz, **Steuerung für Handy und Tablet**).
 Am Ende steht das vollständige Änderungsprotokoll.
 
 ---
@@ -37,6 +38,14 @@ Am Ende steht das vollständige Änderungsprotokoll.
 | 7 | David verwürfelt **alle** Nachrichten einer Person, bis er jemand anderen auswählt | ✅ | `server.py` (Pakete 65/50) |
 | 8 | Alle können in der Lobby die Rollen nachschlagen | ✅ Button **ROLLEN-INFO** für alle (Host: ROLLEN), Details per Mauszeiger/Klick | `main.py` |
 | 9 | Spiel soll **sehr flüssig** laufen | ✅ Zeichen-Code optimiert: **52 ms → ~3–4 ms Rechenzeit pro Bild, 54–55 FPS** im Browser | `main.py`, `fx.py`, `hud.py` (Abschnitt 11) |
+
+### Phase 3 – dritte Änderungsliste
+
+| # | Anforderung | Status | Wo |
+|---|-------------|--------|----|
+| 1 | Vogelscheichers Attrappe sieht für Imposter aus wie er (war schon so) – aber er darf **nicht getötet werden, solange er unsichtbar ist** | ✅ Der Server lehnt während der Unsichtbarkeit (8 s) jeden Kill ab (auch Stroblpeter), Noahs Fallen und Evelyns Fenster wirken dann ebenfalls nicht. Wer die Attrappe angreift, verbraucht nur seinen Kill-Cooldown. | `server.py` (`is_invisible`, Pakete 30/2/62) |
+| 2 | Spiel erkennt **Handy oder Tablet** | ✅ Touchscreen + mobiler Browser/grober Zeiger; iPads (melden sich als Mac) werden erkannt; Handy und Tablet bekommen unterschiedlich große Bedienelemente | `web/touch.js` |
+| 3 | **Joystick und Buttons** mit flüssiger Steuerung für alles | ✅ Analoger Joystick (Richtung **und** Tempo stufenlos), große antippbare Aktions-Buttons, Schließen-Knopf, Vent-Pfeile, Chat über die Bildschirmtastatur, Aufgaben per Finger, Querformat-Hinweis, Vollbild. Funktioniert in der Browser-Version **und** im Server-Modus. | `web/touch.js`, `main.py`, `hud.py`, `browser_bridge.py`, `web_bridge.py`, `web/app.js` (Abschnitt 5a) |
 
 > **Hinweis „exe“:** Ubuntu kann keine Windows-`.exe` ausführen. Das Gegenstück unter Linux ist ein
 > ausführbares Skript – `setup.sh`. Es macht genau das Verlangte: im aktuellen Ordner den Container
@@ -158,6 +167,7 @@ ThalheimerIsAmongUs/
 │    ├─ ★ client_template.tmpl  Spielseite des Browser-Modus (Ladeanzeige, Werkzeugleiste, Video)
 │    ├─ ★ game_glue.js      Verbindung Webseite ↔ Spiel (WebSocket, Sounds, Video, Werkzeugleiste)
 │    ├─ ★ audio.js          Web-Audio-Wiedergabe (von Startseite und Spielseite genutzt)
+│    ├─ ★ touch.js          Handy/Tablet: Erkennung, Joystick, Touch-Knöpfe, Chat-Eingabe (beide Modi)
 │    ├─ ★ cdn/              (wird erzeugt) WebAssembly-Laufzeit, ~22 MB – nicht in Git
 │    └─ ★ client/           (wird erzeugt) fertiges Spielpaket, ~4,7 MB – nicht in Git
 ├─ ★ Assets/Sounds/         die 10 MP3s aus SoundeffectsAmogus
@@ -274,6 +284,34 @@ Steuerung wie bisher: **WASD** laufen, **E** benutzen/melden/töten, **F** Fähi
 **Leertaste** Vent, **M** Karte, **R** Rolle, **Q** Task/Karte schließen, **Enter** Chat. Alle
 Aktions-Buttons unten rechts sind zusätzlich **anklickbar**. Im Browser beendet **Q** das Spiel nicht
 (dafür gibt es „Verlassen“).
+
+### 5a. Handy & Tablet (Phase 3)
+
+Das Spiel erkennt Handys und Tablets automatisch (`web/touch.js`) und schaltet die Touch-Steuerung
+ein. Auf einem Laptop mit Touchscreen reicht es, den Bildschirm zu berühren. Über ☰ oben rechts gibt
+es die Werkzeugleiste mit dem Schalter **„Touch: an/aus“**. Zum Testen am PC: `&touch=1` an die Adresse
+der Spielseite hängen.
+
+| Element | Wo | Funktion |
+|---------|----|----------|
+| **Joystick** | links unten | Laufen – stufenlos in jede Richtung, wenig Ausschlag = langsam, ab ~80 % volles Tempo. Er erscheint dort, wo der Daumen aufsetzt, und wandert mit, wenn der Daumen über den Rand zieht. Kleine Totzone gegen Zittern. |
+| **Aktions-Buttons** | rechts unten (vom Spiel gezeichnet) | TÖTEN, MELDEN, NOTFALL, BENUTZEN, VENT, Fähigkeit, REISEN, KARTE, ROLLE – einfach antippen. Auf dem Handy etwas größer als am PC, ohne Tastenhinweise. |
+| **✕ Schließen** | oben rechts | erscheint bei offener Aufgabe, Karte oder Rolleninfo (wie Q) |
+| **◀ ▶** | unten Mitte | erscheinen im Vent: zum vorigen/nächsten Vent (wie A/D) |
+| **Chat** | Meeting | Antippen des Chat-Felds öffnet oben ein Eingabefeld mit Bildschirmtastatur und „Senden“; es bleibt für weitere Nachrichten offen. Geister bekommen kein Feld. |
+| **Aufgaben** | – | Ziehen, Halten und Tippen mit dem Finger funktioniert wie mit der Maus. |
+| **☰** | oben rechts | klappt die Werkzeugleiste auf (Raum-Code, Link, Ton, Vollbild, Touch an/aus, Verlassen) |
+
+* **Zwei Daumen gleichzeitig:** Man kann laufen und dabei Buttons antippen.
+* Beim ersten Antippen geht das Spiel ins **Vollbild** und – wo der Browser es erlaubt (Android) –
+  ins **Querformat**. Das iPhone erlaubt Webseiten kein Vollbild; dort hilft „Zum Home-Bildschirm“.
+* Im **Hochformat** erscheint der Hinweis „Bitte das Gerät quer halten“.
+* **Layout:** In der Lobby wandern ROLLEN / EINSTELLUNGEN / ZUTEILEN nach oben (unten links liegt der
+  Joystick). Imposter −/+ und die Einstellungs-Knöpfe sind größer. Die Tastatur-Hilfe in der linken
+  Leiste entfällt.
+* **Ton:** Handys geben Ton erst nach der ersten Berührung frei, das passiert automatisch.
+* Funktioniert in der Browser-Version **und** im Server-Modus (dort schickt die Seite Joystick und
+  Knöpfe an die Spielsitzung auf dem Server).
 
 ---
 
@@ -482,6 +520,16 @@ Phase 2 (Browser-Version und neue Regeln):
 | 29 | Werkzeugleiste brach in kleinen Fenstern um | kompakte Darstellung per CSS |
 | 30 | Zwischengespeicherte, ausgegraute Buttons wurden doppelt abgedunkelt | Abdunkeln per `BLEND_RGBA_MULT` direkt im Cache-Bild |
 
+Phase 3 (Vogelscheicher, Handy/Tablet):
+
+| # | Fehler | Behebung |
+|---|--------|----------|
+| 31 | Vogelscheicher: Die Attrappe ist seine eingefrorene Figur (Position wird nicht mehr weitergegeben). Wer sie tötete, tötete den echten Vogelscheicher, obwohl er unsichtbar woanders stand | Server prüft `is_invisible()`: kein Kill, keine Falle, kein Fenster-Tod während der Unsichtbarkeit |
+| 32 | Chat-Nachrichten wurden hart nach 120 Bytes abgeschnitten – ein Umlaut an der Grenze wurde zerteilt | Kürzen ohne ein Zeichen zu zerschneiden (`send_meeting_chat`) |
+| 33 | Handys geben Ton erst beim Loslassen des Fingers frei – der Ton blieb auf dem Handy aus | Ton wird zusätzlich bei `pointerup`/`touchend` freigeschaltet |
+| 34 | Nach einem Update konnten Handys noch lange alte JavaScript-Dateien aus dem Cache nutzen | `/static/` und `/play/` mit `Cache-Control: no-cache` (unverändert → kurze Antwort 304) |
+| 35 | Server-Modus: Ziehen mit dem Finger kam nicht an (nur Maus-Ereignisse) | Pointer-Events für Finger, ein Finger = linke Maustaste |
+
 ---
 
 ## 13. Tests (durchgeführt)
@@ -521,12 +569,32 @@ das TCP-Protokoll; in Phase 2 zusätzlich **echte Browser** – Microsoft Edge o
   Docker-Lauf war auf dem Entwicklungsrechner (Windows ohne Docker/WSL) nicht möglich – **beim ersten
   `bash setup.sh` auf dem Ubuntu-Server bitte die Ausgabe ansehen.**
 
+### Phase 3
+* **Vogelscheicher (6/6):** fest zugeteilt · Kill auf den unsichtbaren Vogelscheicher abgelehnt · Falle
+  löst unsichtbar nicht aus · normaler Kill funktioniert · nach der Unsichtbarkeit schnappt die Falle zu. ✅
+* **Handy, Browser-Version (21/21)** – emuliertes Android-Handy 844×390 mit echten Touch-Gesten:
+  als Handy erkannt · Joystick in Lobby und Spiel · volles Tempo (~180 px/s wie Tastatur), halber
+  Ausschlag schräg = halbes Tempo in beide Richtungen · Loslassen stoppt sofort · **Joystick halten +
+  zweiter Finger tippt Button** · Rollen zuteilen und START per Antippen · KARTE antippen → ✕ schließt
+  sie · Meeting: Chat-Feld antippen → Tastatur-Feld → Nachricht kommt **genau einmal** an (kein
+  Doppeltippen ins Spiel) · Hochformat-Hinweis · keine Fehler. ✅
+* **Ziehen in Aufgaben:** Während der Finger zieht, meldet pygame gedrückte Maustaste und die richtige
+  Position (so arbeiten die Mini-Aufgaben). ✅
+* **Handy, Server-Modus (7/7):** Startseite ohne Touch-Sperre · Joystick bewegt/stoppt · zweiter Finger
+  öffnet EINSTELLUNGEN · ZURÜCK per Antippen · keine Fehler. ✅
+* **Tablet/Desktop (4/4):** iPad (meldet sich als Mac) → Tablet-Modus · Desktop ohne Touchscreen →
+  alles wie vorher, kein Touch-Schalter. ✅
+* **Regression:** Desktop-Browser 13/13, Regeln im Server-Modus 15/15, lokaler Desktop-Modus startet. ✅
+
 ---
 
 ## 14. Bekannte Grenzen / mögliche nächste Schritte
 
-* Es wird eine **Tastatur** gebraucht (Laptop/PC). Für Handys wären Touch-Steuerung (virtueller
-  Joystick) eine Erweiterung.
+* Auf kleinen Handys ist das Spielbild (1440×810, verkleinert) mit seinen Texten klein – z.B. die
+  Aufgabenliste. Tablets sind angenehmer. Die Auflösung lässt sich nicht einfach verkleinern, weil die
+  Mini-Aufgaben mindestens 1250×760 Pixel brauchen.
+* Getestet wurde die Touch-Steuerung mit emulierten Geräten (Android-Handy, iPad) in Edge – echte
+  Geräte bitte einmal selbst ausprobieren, besonders iPhone/Safari.
 * Ein Beitritt ist nur in der Lobby möglich; wer die Seite neu lädt, betritt den Raum als neuer
   Spieler (in einer laufenden Runde also erst in der nächsten).
 * Die Bildrate im Browser hängt vom Gerät ab. Gemessen wurde auf einem normalen Windows-PC; sehr alte
@@ -564,6 +632,14 @@ Neue Server-Kommandozeile: `python server.py [--host IP] [--port N] [--room CODE
 
 Neue Web-Adressen: `/play/` (Spielseite + Spielpaket), `/cdn/` (Browser-Laufzeit), `/ws/game`
 (Spiel-WebSocket), `/api/info` meldet zusätzlich `browser_client`.
+
+**Touch (Phase 3)** – kein neues Spielpaket, nur zwischen Webseite und Spiel:
+
+| Nachricht | Richtung | Inhalt |
+|-----------|----------|--------|
+| `touchctx` | Spiel → Seite | `joy, close, vent` (0/1), `chat` (Rechteck in Spielkoordinaten oder null) – nur bei Änderung |
+| `tiauGame.touchPoll()` | Seite → Spiel (Browser-Version) | pro Bild abgefragt: `""` oder `{m, x, y, k:[…], t:[…]}` (Modus 0 aus / 1 Tablet / 2 Handy, Joystick, Tasten, Chat-Texte) |
+| `touch` / `joy` / `tk` / `txt` | Seite → Sitzung (Server-Modus, JSON über `/ws`) | Modus · Joystick x/y · Taste (`q`, `a`, `d`) · Chat-Text |
 
 ---
 
@@ -649,7 +725,28 @@ Schicht und baut das Spielpaket; `.dockerignore`/`.gitignore` ignorieren `build/
 `web/client/`; `start_lokal_windows.bat` baut vor dem Start die Browser-Version; `web_bridge.py` nutzt
 `fonts.install`.
 
-**Hinweis Git:** Die Änderungen sind noch **nicht committet**. Die schon früher eingecheckten
+### Phase 3
+
+**server.py** – `is_invisible(pid)`; Kill (30), Falle (in Paket 2) und Fenster-Tod (62) prüfen die
+Unsichtbarkeit des Vogelscheichers.
+
+**main.py** – `Player.move(..., axis)` (analoger Joystick, Blickrichtung erst ab 15 % seitlichem
+Ausschlag); `touch_poll()` (einmal pro Bild), `touch_context()`/`touch_sync()` (meldet passende
+Knöpfe), `send_meeting_chat()` (Enter und Touch-Feld); Touch-Layout der Lobby, größere −/+ und
+Einstellungs-Knöpfe, linke Leiste ohne Tastatur-Hilfe, Hinweis „Hier tippen, um zu schreiben“.
+
+**hud.py** – `layout_buttons(..., touch)`: größere Buttons, keine Tastenhinweise auf Touch-Geräten.
+
+**browser_bridge.py / web_bridge.py** – `poll_touch()` mit gleicher Rückgabe in beiden Modi;
+Server-Modus nimmt `touch/joy/tk/txt` entgegen, „blur“ lässt auch den Joystick los.
+
+**web/** – neu `touch.js`; `game_glue.js` (Touch-Anbindung, Ton-Freigabe auf Handys),
+`client_template.tmpl` (Handy-Meta-Tags, `touch.js`), `app.js` (Touch im Server-Modus, Finger-Ziehen
+per Pointer-Events), `index.html` (`touch.js`).
+
+**web_server.py** – `revalidate_code`: `Cache-Control: no-cache` für `/static/` und `/play/`.
+
+**Hinweis Git:** Stand Phase 1+2 wurde vom Nutzer committet („wet“); Phase 3 ist noch **nicht committet**. Die schon früher eingecheckten
 `__pycache__/*.pyc` ändern sich bei jedem Start – wer sie loswerden will:
 `git rm -r --cached __pycache__`. Damit `setup.sh`/`remove.sh` nach einem `git clone` direkt
 ausführbar sind: `git update-index --chmod=+x setup.sh remove.sh` (sonst einfach `bash setup.sh`).

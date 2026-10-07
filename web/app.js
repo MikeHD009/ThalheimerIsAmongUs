@@ -235,6 +235,7 @@
         break;
       case "sfx": case "loop": case "music": audio.handle(msg); break;
       case "video": msg.on ? playVideo(msg.src) : stopVideo(false); break;
+      case "touchctx": if (touch) touch.setContext(msg); break;
       case "end": showEnded(msg.text || "Die Verbindung wurde beendet.", msg.reason); break;
     }
   }
@@ -292,10 +293,12 @@
     fitCanvas();
     goFullscreen();
     canvas.focus();
+    startTouch();
 
     const proto = location.protocol === "https:" ? "wss" : "ws";
     ws = new WebSocket(`${proto}://${location.host}/ws?room=${encodeURIComponent(code)}&name=${encodeURIComponent(name)}`);
     ws.binaryType = "arraybuffer";
+    ws.onopen = () => send({ t: "touch", m: touch ? touch.mode() : 0 });
     ws.onmessage = (e) => {
       if (typeof e.data === "string") {
         try { onEvent(JSON.parse(e.data)); } catch (err) { /* ignorieren */ }
@@ -317,12 +320,14 @@
     $("endTitle").textContent = reason === "join_failed" ? "Beitritt nicht möglich" : "Spiel verlassen";
     $("endText").textContent = text;
     $("ended").classList.remove("hidden");
+    stopTouch();
     stopAllAudio();
     if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
   }
 
   function backToHome() {
     if (ws) { ended = true; try { ws.close(); } catch (e) { /* ok */ } ws = null; }
+    stopTouch();
     game.classList.add("hidden");
     home.classList.remove("hidden");
     try { history.replaceState(null, "", "/"); } catch (e) { /* ok */ }
@@ -418,17 +423,77 @@
     send({ t: "mu", b: e.button, x: p.x, y: p.y });
   });
   let pendingMove = null;
-  canvas.addEventListener("mousemove", (e) => {
-    if (!inGame()) return;
+  function queueMove(p) {
     const first = pendingMove === null;
-    pendingMove = toGame(e);
+    pendingMove = p;
     if (first) {
       requestAnimationFrame(() => {   // hoechstens einmal pro Bildschirm-Frame senden
         if (pendingMove) send({ t: "mm", x: pendingMove.x, y: pendingMove.y });
         pendingMove = null;
       });
     }
+  }
+  canvas.addEventListener("mousemove", (e) => {
+    if (!inGame()) return;
+    queueMove(toGame(e));
   });
+
+  // NEU: Finger auf dem Spielbild (Handy/Tablet) = linke Maustaste, inkl. Ziehen (fuer die Tasks).
+  // Ein zweiter Finger (z.B. Daumen auf dem Joystick) stoert dabei nicht.
+  let touchPtr = null;
+  canvas.addEventListener("pointerdown", (e) => {
+    if (e.pointerType === "mouse" || !inGame() || touchPtr !== null) return;
+    e.preventDefault();                 // keine zusaetzlichen Maus-Ereignisse vom Browser
+    touchPtr = e.pointerId;
+    try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* egal */ }
+    const p = toGame(e);
+    pendingMove = null;
+    send({ t: "mm", x: p.x, y: p.y });
+    send({ t: "md", b: 0, x: p.x, y: p.y });
+  });
+  canvas.addEventListener("pointermove", (e) => {
+    if (e.pointerId !== touchPtr) return;
+    e.preventDefault();
+    queueMove(toGame(e));
+  });
+  function touchUp(e) {
+    if (e.pointerId !== touchPtr) return;
+    touchPtr = null;
+    const p = toGame(e);
+    if (pendingMove) { send({ t: "mm", x: pendingMove.x, y: pendingMove.y }); pendingMove = null; }
+    send({ t: "mu", b: 0, x: p.x, y: p.y });
+  }
+  canvas.addEventListener("pointerup", touchUp);
+  canvas.addEventListener("pointercancel", touchUp);
+
+  // ---------------------------------------------------------------- Touch-Steuerung (web/touch.js)
+  let touch = null;
+  let axisQueued = null;
+  function startTouch() {
+    if (touch || !window.TiauTouch) return;
+    touch = new window.TiauTouch({
+      canvas,
+      toolbar: $("toolbar"),
+      gameW: canvas.width,
+      gameH: canvas.height,
+      onMode: (m) => send({ t: "touch", m }),
+      onAxis: (x, y) => {
+        const first = axisQueued === null;
+        axisQueued = { x, y };
+        if (first) {
+          requestAnimationFrame(() => {   // hoechstens einmal pro Bildschirm-Frame
+            send({ t: "joy", x: axisQueued.x, y: axisQueued.y });
+            axisQueued = null;
+          });
+        }
+      },
+      onKey: (k) => send({ t: "tk", k }),
+      onText: (text) => send({ t: "txt", s: text }),
+    });
+  }
+  function stopTouch() {
+    if (touch) { touch.destroy(); touch = null; }
+  }
   canvas.addEventListener("wheel", (e) => {
     if (!inGame()) return;
     e.preventDefault();
