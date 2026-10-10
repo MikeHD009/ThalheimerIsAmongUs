@@ -1336,6 +1336,22 @@ def reset_task_instance(idx):
     except Exception as e:
         print("TASK RESET ERROR:", e)
 
+def reset_all_tasks():
+    """FIX: Neue Runde -> ALLE Aufgaben frisch erzeugen. Vorher blieben die Aufgaben-Objekte der
+    letzten Runde erhalten: eine dort erledigte Aufgabe galt intern weiter als fertig und ging in
+    der naechsten Runde sofort wieder zu - man konnte sie nicht mehr machen."""
+    global active_task_idx, task_aborted, already_done_timer
+    task_manager.active_task = None
+    task_manager.message_timer = 0
+    for i, old_task in enumerate(task_manager.tasks):
+        try:
+            task_manager.tasks[i] = type(old_task)(old_task.screen)
+        except Exception as e:
+            print("TASK RESET ERROR:", type(old_task).__name__, e)
+    active_task_idx = -1
+    task_aborted = False
+    already_done_timer = 0
+
 def get_meeting_layout():
     """Liefert Spieler-Boxen, Skip-Button und Chat-Bereiche für die Meeting-Ansicht.
     Wird sowohl von draw_meeting() (Zeichnen) als auch vom Event-Handler (Abstimmen/Chat)
@@ -2684,6 +2700,7 @@ def handle_ui_event(kind, data):
         sfx.set_loop("walking", False)
     elif kind == "round_start":
         death_anim = eject_anim = end_screen = None
+        reset_all_tasks()              # FIX: Aufgaben der letzten Runde sind sonst schon "fertig"
         sfx.play("role_reveal")
     elif kind == "back_to_lobby":
         death_anim = eject_anim = end_screen = None

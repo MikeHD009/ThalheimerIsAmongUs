@@ -530,6 +530,13 @@ Phase 3 (Vogelscheicher, Handy/Tablet):
 | 34 | Nach einem Update konnten Handys noch lange alte JavaScript-Dateien aus dem Cache nutzen | `/static/` und `/play/` mit `Cache-Control: no-cache` (unverändert → kurze Antwort 304) |
 | 35 | Server-Modus: Ziehen mit dem Finger kam nicht an (nur Maus-Ereignisse) | Pointer-Events für Finger, ein Finger = linke Maustaste |
 
+Nachtrag (Rückmeldung nach Phase 3):
+
+| # | Fehler | Behebung |
+|---|--------|----------|
+| 36 | **Erledigte Aufgaben ließen sich in der nächsten Runde nicht mehr machen.** Die 24 Aufgaben-Objekte wurden nur einmal beim Programmstart erzeugt; eine erledigte Aufgabe blieb intern `finished` und ging in der nächsten Runde sofort wieder zu | `reset_all_tasks()` erzeugt bei jedem Rundenstart alle Aufgaben neu (dauert ~8 ms, unsichtbar während des Rollen-Intros) und setzt den Aufgaben-Zustand zurück |
+| 37 | **Neu beigetretene Spieler flogen manchmal sofort raus.** IDs werden wiederverwendet: trennte sich jemand und trat gleich jemand anderes bei (z.B. Seite neu geladen), bekam der Neue dieselbe ID – und der noch laufende Thread der alten Verbindung „trennte“ dann den Neuen (im Test 17 von 25 Mal) | `disconnect()` trennt nur, wenn die ID noch zu genau dieser Verbindung gehört; alte Threads verarbeiten keine Pakete mehr für neu vergebene IDs |
+
 ---
 
 ## 13. Tests (durchgeführt)
@@ -585,6 +592,13 @@ das TCP-Protokoll; in Phase 2 zusätzlich **echte Browser** – Microsoft Edge o
 * **Tablet/Desktop (4/4):** iPad (meldet sich als Mac) → Tablet-Modus · Desktop ohne Touchscreen →
   alles wie vorher, kein Touch-Schalter. ✅
 * **Regression:** Desktop-Browser 13/13, Regeln im Server-Modus 15/15, lokaler Desktop-Modus startet. ✅
+
+### Nachtrag
+* **Zwei Runden (8/8):** Runde 1 Aufgabe erledigen → Runde endet → Lobby → Runde 2: dieselbe Aufgabe
+  ist nicht mehr „fertig“ und bleibt offen (vor der Korrektur nachgestellt: sie ging sofort wieder zu). ✅
+* **Sofort-Wiederbeitritt (25/25):** Verbindung trennt sofort, gleich danach tritt ein neuer Spieler mit
+  derselben ID bei – alter Server: 17 von 25 fälschlich getrennt, neuer Server: keiner. ✅
+* **Vogelscheicher + Verlassen (7/7)**, lokaler Desktop-Modus startet. ✅
 
 ---
 
@@ -746,7 +760,11 @@ per Pointer-Events), `index.html` (`touch.js`).
 
 **web_server.py** – `revalidate_code`: `Cache-Control: no-cache` für `/static/` und `/play/`.
 
-**Hinweis Git:** Stand Phase 1+2 wurde vom Nutzer committet („wet“); Phase 3 ist noch **nicht committet**. Die schon früher eingecheckten
+**Nachtrag** – `main.py`: `reset_all_tasks()` beim Rundenstart (`handle_ui_event("round_start")`).
+`server.py`: `disconnect(player_id, expected_conn)`; `handle_client` und `send_to` übergeben ihre
+Verbindung, damit nie ein falscher (neuer) Spieler getrennt wird.
+
+**Hinweis Git:** Phase 1–3 wurden vom Nutzer committet („wet“, „d“); der Nachtrag ist noch **nicht committet**. Die schon früher eingecheckten
 `__pycache__/*.pyc` ändern sich bei jedem Start – wer sie loswerden will:
 `git rm -r --cached __pycache__`. Damit `setup.sh`/`remove.sh` nach einem `git clone` direkt
 ausführbar sind: `git update-index --chmod=+x setup.sh remove.sh` (sonst einfach `bash setup.sh`).

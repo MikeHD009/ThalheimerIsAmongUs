@@ -288,7 +288,7 @@ def send_to(pid, data):
         return True
     except Exception:
         # Nicht direkt hier trennen (wir koennten mitten in einer Schleife ueber clients sein)
-        threading.Thread(target=disconnect, args=(pid,), daemon=True).start()
+        threading.Thread(target=disconnect, args=(pid, conn), daemon=True).start()
         return False
 
 def broadcast_to_all(data, exclude_id=None):
@@ -342,10 +342,16 @@ def check_win_conditions():
                 win_packet += struct.pack("!B", imp_id)
             finish_game(win_packet)
 
-def disconnect(player_id):
+def disconnect(player_id, expected_conn=None):
+    """expected_conn: nur trennen, wenn die ID noch zu DIESER Verbindung gehoert.
+    FIX: IDs werden wiederverwendet - der Thread einer gerade getrennten Verbindung durfte sonst
+    einen neuen Spieler rauswerfen, der in der Zwischenzeit dieselbe ID bekommen hat
+    (z.B. Seite neu geladen und sofort wieder beigetreten)."""
     global host_id
 
     with state_lock:
+        if expected_conn is not None and clients.get(player_id) is not expected_conn:
+            return  # gehoert schon einem anderen (neuen) Spieler bzw. ist schon getrennt
         conn = clients.pop(player_id, None)
         if conn is None:
             return  # schon getrennt (kann von mehreren Threads gleichzeitig kommen)
@@ -393,8 +399,8 @@ def handle_client(conn, player_id):
             packet = data[0]
             payload = read_packet(conn, packet)
             with state_lock:
-                if player_id not in clients:
-                    break
+                if clients.get(player_id) is not conn:
+                    break      # Verbindung wurde schon getrennt (ID evtl. neu vergeben)
                 process_packet(conn, player_id, packet, payload)
 
     except (ConnectionError, OSError):
@@ -402,7 +408,7 @@ def handle_client(conn, player_id):
     except Exception as e:
         log(f"ERROR Player {player_id}: {e}")
 
-    disconnect(player_id)
+    disconnect(player_id, conn)
 
 def process_packet(conn, player_id, packet, payload):
     global host_id, total_crew_tasks, completed_crew_tasks, game_active
